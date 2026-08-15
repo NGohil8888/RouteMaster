@@ -1,0 +1,27 @@
+version: '3.8'
+
+services:
+  backend:
+    build: ./backend
+    container_name: hermes-backend
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./data:/app/data
+    environment:
+      - SECRET_KEY=${SECRET_KEY:-change-me-in-production}
+      - DATABASE_URL=${DATABASE_URL:-sqlite:///./data/hermes.db}
+      - DEBUG=${DEBUG:-false}
+      - HEALTH_CHECK_INTERVAL_SECONDS=15
+      - REQUEST_TIMEOUT_SECONDS=120
+      - MAX_RETRIES=3
+    restart: unless-stopped
+
+  frontend:
+    build: ./frontend
+    container_name: hermes-frontend
+    ports:
+      - "3000:80"
+    depends_on:
+      - backend
+    restart: unless-stopped
