@@ -28,7 +28,7 @@ export default function Models() {
               {instances.map((inst) => (
                 <div key={`${inst.server_id}-${name}`} className="bg-gray-800/50 p-3 rounded-lg">
                   <p className="font-medium text-sm">{inst.server_name}</p>
-                  <p className="text-xs text-gray-500">{inst.parameter_size} • {inst.quantization}</p>
+                  <p className="text-xs text-gray-500">{inst.parameter_size} &bull; {inst.quantization}</p>
                   <span className={`badge text-xs mt-2 ${inst.server_healthy ? 'badge-green' : 'badge-red'}`}>
                     {inst.server_healthy ? 'Available' : 'Unavailable'}
                   </span>

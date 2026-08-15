@@ -13,10 +13,11 @@ async def lifespan(app: FastAPI):
     yield
     await health_monitor.stop()
 
+
 app = FastAPI(
     title=settings.APP_NAME,
     version=settings.APP_VERSION,
-    lifespan=lifespan
+    lifespan=lifespan,
 )
 
 app.add_middleware(
@@ -27,26 +28,28 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# API routes
 app.include_router(auth.router, prefix=settings.API_PREFIX)
 app.include_router(servers.router, prefix=settings.API_PREFIX)
 app.include_router(models.router, prefix=settings.API_PREFIX)
-app.include_router(chat.router, prefix=settings.OPENAI_COMPATIBLE_PREFIX)
 app.include_router(dashboard.router, prefix=settings.API_PREFIX)
 app.include_router(logs.router, prefix=settings.API_PREFIX)
 app.include_router(health.router, prefix=settings.API_PREFIX)
 app.include_router(test.router, prefix=settings.API_PREFIX)
 
-# OpenAI-compatible endpoints
-@app.get("/v1/models")
-async def openai_models():
-    from app.routers.models import list_models
-    return await list_models()
+# OpenAI-compatible routes (mounted at /v1)
+app.include_router(chat.router, prefix=settings.OPENAI_COMPATIBLE_PREFIX)
+app.include_router(models.router, prefix=settings.OPENAI_COMPATIBLE_PREFIX)
 
-@app.post("/v1/chat/completions")
-async def openai_chat_completions(req, request):
-    from app.routers.chat import chat_completions
-    return await chat_completions(req, request)
+
+@app.get("/health")
+def root_health():
+    return {"status": "ok", "version": settings.APP_VERSION}
+
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run("app.main:app", host="0.0.0.0", port=8000, reload=settings.DEBUG)
+
+    uvicorn.run(
+        "app.main:app", host="0.0.0.0", port=8000, reload=settings.DEBUG
+    )

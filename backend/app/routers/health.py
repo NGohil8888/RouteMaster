@@ -4,10 +4,11 @@ from app.services.hermes_agent import hermes
 
 router = APIRouter(prefix="/health", tags=["health"])
 
+
 @router.get("")
 def health():
     return {
         "status": "healthy",
         "monitor_running": health_monitor.running,
-        "routing_mode": hermes.get_routing_mode().value
+        "routing_mode": hermes.get_routing_mode().value,
     }

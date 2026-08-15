@@ -1,8 +1,7 @@
 import { useEffect } from 'react'
 import { useAppStore } from '../store'
 import api from '../services/api'
-import { Server, Activity, Clock, AlertTriangle, Brain } from 'lucide-react'
-import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts'
+import { Server, Activity, Clock, AlertTriangle } from 'lucide-react'
 
 export default function Dashboard() {
   const { stats, setStats, servers, setServers } = useAppStore()
@@ -41,9 +40,9 @@ export default function Dashboard() {
                   <p className="text-xs text-gray-500">{s.url}</p>
                 </div>
                 <div className="flex items-center gap-4">
-                  <span className="text-xs text-gray-400">{s.current_load}/{s.max} load</span>
-                  <span className={`badge ${s.healthy ? 'badge-green' : 'badge-red'}`}>
-                    {s.healthy ? 'Healthy' : 'Unhealthy'}
+                  <span className="text-xs text-gray-400">{s.current_load}/{s.max_concurrent || 10} load</span>
+                  <span className={`badge ${s.is_healthy ? 'badge-green' : 'badge-red'}`}>
+                    {s.is_healthy ? 'Healthy' : 'Unhealthy'}
                   </span>
                 </div>
               </div>

@@ -14,7 +14,8 @@ export default function Login() {
     setError('')
     try {
       const endpoint = isSetup ? '/auth/setup' : '/auth/login'
-      const res = await api.post(endpoint, { username, password })
+      const payload = { username, password }
+      const res = await api.post(endpoint, payload)
       setToken(res.data.access_token)
       window.location.reload()
     } catch (err) {

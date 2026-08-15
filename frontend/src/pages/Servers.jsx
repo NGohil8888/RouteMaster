@@ -7,7 +7,11 @@ export default function Servers() {
   const { servers, setServers } = useAppStore()
   const [showForm, setShowForm] = useState(false)
   const [editing, setEditing] = useState(null)
-  const [form, setForm] = useState({ name: '', url: '', api_key: '', priority: 5, weight: 1, max_concurrent: 10, timeout_seconds: 120 })
+  const [form, setForm] = useState({
+    name: '', url: '', api_key: '',
+    priority: 5, weight: 1,
+    max_concurrent: 10, timeout_seconds: 120
+  })
 
   const load = async () => {
     const res = await api.get('/servers/status')
@@ -37,7 +41,9 @@ export default function Servers() {
 
   const test = async (id) => {
     const res = await api.post(`/servers/${id}/test`)
-    alert(res.data.healthy ? `Healthy! Latency: ${Math.round(res.data.latency_ms)}ms, Models: ${res.data.models.length}` : `Unhealthy: ${res.data.error}`)
+    alert(res.data.healthy
+      ? `Healthy! Latency: ${Math.round(res.data.latency_ms)}ms, Models: ${res.data.models.length}`
+      : `Unhealthy: ${res.data.error}`)
   }
 
   const toggle = async (s) => {
@@ -61,7 +67,7 @@ export default function Servers() {
             <input className="input" placeholder="Name" value={form.name} onChange={(e) => setForm({...form, name: e.target.value})} required />
             <input className="input" placeholder="URL (http://...)" value={form.url} onChange={(e) => setForm({...form, url: e.target.value})} required />
             <input className="input" placeholder="API Key (optional)" value={form.api_key} onChange={(e) => setForm({...form, api_key: e.target.value})} />
-            <input className="input" type="number" placeholder="Priority (1-10)" value={form.priority} onChange={(e) => setForm({...form, priority: parseInt(e.target.value)})} />
+            <input className="input" type="number" placeholder="Priority" value={form.priority} onChange={(e) => setForm({...form, priority: parseInt(e.target.value)})} />
             <input className="input" type="number" placeholder="Weight" value={form.weight} onChange={(e) => setForm({...form, weight: parseInt(e.target.value)})} />
             <input className="input" type="number" placeholder="Max Concurrent" value={form.max_concurrent} onChange={(e) => setForm({...form, max_concurrent: parseInt(e.target.value)})} />
             <div className="col-span-2 flex gap-2">
@@ -78,10 +84,10 @@ export default function Servers() {
             <div>
               <div className="flex items-center gap-2">
                 <h3 className="font-semibold">{s.name}</h3>
-                <span className={`badge ${s.healthy ? 'badge-green' : 'badge-red'}`}>{s.healthy ? 'Healthy' : 'Down'}</span>
+                <span className={`badge ${s.is_healthy ? 'badge-green' : 'badge-red'}`}>{s.is_healthy ? 'Healthy' : 'Down'}</span>
                 {!s.enabled && <span className="badge badge-yellow">Disabled</span>}
               </div>
-              <p className="text-sm text-gray-500">{s.url} • {s.models_count} models • Load {s.current_load}/{s.max_concurrent || 10}</p>
+              <p className="text-sm text-gray-500">{s.url} &bull; {s.models_count} models &bull; Load {s.current_load}/{s.max_concurrent || 10}</p>
               <p className="text-xs text-gray-600">Latency: {Math.round(s.response_latency_ms)}ms | Errors: {(s.error_rate * 100).toFixed(1)}%</p>
             </div>
             <div className="flex items-center gap-2">

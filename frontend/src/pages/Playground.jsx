@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect } from 'react'
 import api from '../services/api'
 
 export default function Playground() {
@@ -12,7 +12,7 @@ export default function Playground() {
   const [time, setTime] = useState(0)
 
   useEffect(() => {
-    api.get('/servers/status').then((res) => setServers(res.data.filter((s) => s.healthy)))
+    api.get('/servers/status').then((res) => setServers(res.data.filter((s) => s.is_healthy)))
   }, [])
 
   const send = async () => {
@@ -21,14 +21,41 @@ export default function Playground() {
     setTime(0)
     const start = Date.now()
     try {
-      const res = await api.post('/test/prompt', {
-        server_id: serverId ? parseInt(serverId) : null,
-        model,
-        prompt,
-        stream
-      })
-      setResponse(res.data.response)
-      setTime(res.data.response_time_ms)
+      if (stream) {
+        // SSE streaming
+        const res = await fetch('/api/v1/test/prompt', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${localStorage.getItem('hermes_token')}`
+          },
+          body: JSON.stringify({
+            server_id: serverId ? parseInt(serverId) : null,
+            model,
+            prompt,
+            stream: true
+          })
+        })
+        const reader = res.body.getReader()
+        const decoder = new TextDecoder()
+        let text = ''
+        while (true) {
+          const { done, value } = await reader.read()
+          if (done) break
+          text += decoder.decode(value, { stream: true })
+          setResponse(text)
+        }
+        setTime(Date.now() - start)
+      } else {
+        const res = await api.post('/test/prompt', {
+          server_id: serverId ? parseInt(serverId) : null,
+          model,
+          prompt,
+          stream: false
+        })
+        setResponse(res.data.response)
+        setTime(res.data.response_time_ms)
+      }
     } catch (err) {
       setResponse(`Error: ${err.response?.data?.detail || err.message}`)
     }

@@ -27,10 +27,10 @@ export default function Logs() {
           <option value="success">Success</option>
           <option value="error">Error</option>
         </select>
-        <select className="input w-40" value={filter.minutes} onChange={(e) => setFilter({...filter, minutes: e.target.value})}>
-          <option value="60">Last Hour</option>
-          <option value="360">Last 6 Hours</option>
-          <option value="1440">Last 24 Hours</option>
+        <select className="input w-40" value={filter.minutes} onChange={(e) => setFilter({...filter, minutes: parseInt(e.target.value)})}>
+          <option value={60}>Last Hour</option>
+          <option value={360}>Last 6 Hours</option>
+          <option value={1440}>Last 24 Hours</option>
         </select>
       </div>
       <div className="card overflow-auto">
