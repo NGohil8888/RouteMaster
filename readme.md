@@ -1,3 +1,37 @@
+&lt;p align="center"&gt;
+  &lt;h1 align="center"&gt;Hermes Ollama Gateway&lt;/h1&gt;
+  &lt;p align="center"&gt;
+    &lt;b&gt;Multi-Server Ollama API Router with Intelligent Load Balancing&lt;/b&gt;
+  &lt;/p&gt;
+  &lt;p align="center"&gt;
+    &lt;img src="https://img.shields.io/badge/FastAPI-009688?style=flat&logo=fastapi&logoColor=white" /&gt;
+    &lt;img src="https://img.shields.io/badge/React-61DAFB?style=flat&logo=react&logoColor=black" /&gt;
+    &lt;img src="https://img.shields.io/badge/Tailwind-06B6D4?style=flat&logo=tailwindcss&logoColor=white" /&gt;
+    &lt;img src="https://img.shields.io/badge/Docker-2496ED?style=flat&logo=docker&logoColor=white" /&gt;
+    &lt;img src="https://img.shields.io/badge/Ollama-000000?style=flat" /&gt;
+  &lt;/p&gt;
+&lt;/p&gt;
+
+---
+
+## What is Hermes?
+
+Hermes is a **self-hosted API gateway** purpose-built for [Ollama](https://ollama.com). It sits between your applications and multiple Ollama instances, providing:
+
+- **One unified API endpoint** for all your Ollama servers
+- **7 intelligent routing modes** (Auto, Round Robin, Least Load, Fastest, Priority, Manual, Failover)
+- **Automatic health monitoring** and failover
+- **OpenAI-compatible API** (`/v1/chat/completions`, `/v1/models`)
+- **Real-time dashboard** for cluster management
+- **Built-in playground** for testing models across servers
+
+Think of it as a load balancer specifically designed for Ollama's API.
+
+---
+
+## Architecture
+
+
 # Hermes Ollama Gateway
 
 A self-hosted API routing and load-balancing platform purpose-built for Ollama-based LLM APIs.
