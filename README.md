@@ -126,3 +126,10 @@ tests/
 run.py                  Entry point
 Dockerfile / docker-compose.yml
 ```
+
+To test 
+
+Invoke-RestMethod -Uri "http://localhost:8000/v1/models" -Method GET
+
+
+Invoke-RestMethod -Uri "http://localhost:8000/v1/chat/completions" -Method POST -ContentType "application/json" -Body '{"model": "minimax-m3:cloud", "messages": [{"role": "user", "content": "Hello!"}]}'
