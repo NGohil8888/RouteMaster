@@ -156,11 +156,13 @@ async def proxy_request(
 
     stream = _is_streaming_request(body) if body else False
     target_path = path.lstrip("/")
-    if not target_path.startswith("v1/"):
-        target_path = f"v1/{target_path}"
+    if target_path.startswith("v1/"):
+        # settings.ollama_openai_base already ends in /v1 - strip any
+        # duplicate v1/ prefix from the incoming path before appending.
+        target_path = target_path[len("v1/"):]
 
     base_url = settings.ollama_openai_base
-    url = f"{base_url}/{target_path}"
+    url = f"{base_url}/{target_path}" if target_path else base_url
     if query_string:
         url = f"{url}?{query_string}"
 
