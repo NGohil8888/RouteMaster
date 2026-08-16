@@ -1,18 +1,35 @@
-# Dependencies
-node_modules/
-__pycache__/
-*.pyc
-*.pyo
-*.egg-info/
-dist/
-build/
-
-# Environment
+# Environment variables
 .env
 .env.local
-.venv
-env/
+.env.*.local
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual environments
 venv/
+.venv/
+ENV/
+env/
 
 # IDE
 .vscode/
@@ -21,24 +38,15 @@ venv/
 *.swo
 *~
 
-# OS
-.DS_Store
-.DS_Store?
-._*
-.Spotlight-V100
-.Trashes
-ehthumbs.db
-Thumbs.db
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
 
 # Logs
 *.log
-npm-debug.log*
+logs/
 
-# Build outputs
-.next/
-out/
-*.tsbuildinfo
-
-# Cache
-.eslintcache
-.stylelintcache
+# OS
+.DS_Store
+Thumbs.db
