@@ -163,6 +163,7 @@ async def proxy_request(
 
     base_url = settings.ollama_openai_base
     url = f"{base_url}/{target_path}" if target_path else base_url
+    logger.info(f"Proxying {method} {path!r} -> {url}")
     if query_string:
         url = f"{url}?{query_string}"
 
