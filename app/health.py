@@ -50,7 +50,6 @@ async def check_account_health(index: int) -> HealthCheckResult:
                 f"Health check passed for account {index} "
                 f"({response_time_ms:.1f}ms)"
             )
-            # If account was not healthy, mark it healthy
             if account.status.state != AccountState.HEALTHY:
                 await account_pool.update_account_state(index, AccountState.HEALTHY)
             return HealthCheckResult(
@@ -61,7 +60,6 @@ async def check_account_health(index: int) -> HealthCheckResult:
                 model_available=True,
             )
 
-        # Non-200 response
         error_msg = f"HTTP {response.status_code}"
         try:
             data = response.json()

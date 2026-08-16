@@ -3,9 +3,8 @@
 import asyncio
 import logging
 from contextlib import asynccontextmanager
-from typing import Any, Dict, Optional
 
-from fastapi import FastAPI, Request, Response
+from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
 from app.config import settings
@@ -20,11 +19,9 @@ logger = logging.getLogger(__name__)
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Application lifespan manager."""
-    # Startup
     setup_logging(settings.log_level)
-    logger.info(f"Starting Ollama Cloud API Gateway v1.0.0")
+    logger.info("Starting Ollama Cloud API Gateway v1.0.0")
 
-    # Initialize account pool
     api_keys = settings.api_keys_list
     if not api_keys:
         logger.error("No Ollama API keys configured! Set OLLAMA_API_KEYS in .env")
@@ -32,12 +29,10 @@ async def lifespan(app: FastAPI):
 
     initialize_pool(api_keys)
 
-    # Start health monitor in background
     health_task = asyncio.create_task(health_monitor_loop())
 
     yield
 
-    # Shutdown
     logger.info("Shutting down Ollama Cloud API Gateway")
     health_task.cancel()
     try:
@@ -104,7 +99,6 @@ async def proxy_v1(request: Request, path: str):
     body = await request.body()
     query_string = str(request.query_params)
 
-    # Forward relevant headers
     headers_to_forward = {}
     for header in ["content-type", "accept", "user-agent", "x-request-id"]:
         value = request.headers.get(header)
