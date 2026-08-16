@@ -1,98 +1,156 @@
-"""Background health monitoring for Ollama Cloud API accounts."""
+"""Background health monitoring for Ollama Cloud accounts."""
 
 import asyncio
 import logging
+import time
+from typing import List
 
 import httpx
 
-from app.account_manager import AccountManager
-from app.config import Settings
+from app.config import settings
+from app.account_manager import AccountState, account_pool
+from app.models import HealthCheckResult
 
 logger = logging.getLogger(__name__)
 
 
-class HealthMonitor:
-    """Periodically checks the health of all configured accounts."""
+async def check_account_health(index: int) -> HealthCheckResult:
+    """Check the health of a single Ollama Cloud account."""
+    if account_pool is None:
+        return HealthCheckResult(
+            index=index,
+            healthy=False,
+            state=AccountState.UNKNOWN,
+            error="Pool not initialized",
+        )
 
-    def __init__(self, account_manager: AccountManager, settings: Settings) -> None:
-        self.account_manager = account_manager
-        self.settings = settings
-        self._task: asyncio.Task | None = None
-        self._stop_event = asyncio.Event()
+    account = account_pool.get_account_by_index(index)
+    if account is None:
+        return HealthCheckResult(
+            index=index,
+            healthy=False,
+            state=AccountState.UNKNOWN,
+            error="Account not found",
+        )
 
-    async def start(self) -> None:
-        """Start the background health check loop."""
-        self._stop_event.clear()
-        self._task = asyncio.create_task(self._run())
+    url = f"{settings.ollama_openai_base}/models"
+    headers = {"Authorization": f"Bearer {account.api_key}"}
 
-    async def stop(self) -> None:
-        """Stop the background health check loop."""
-        self._stop_event.set()
-        if self._task:
-            self._task.cancel()
-            try:
-                await self._task
-            except asyncio.CancelledError:
-                pass
-            self._task = None
+    start_time = time.time()
+    try:
+        async with httpx.AsyncClient(
+            timeout=httpx.Timeout(settings.health_check_timeout_seconds)
+        ) as client:
+            response = await client.get(url, headers=headers)
 
-    async def _run(self) -> None:
-        """Main loop."""
-        await asyncio.sleep(2)
-        while not self._stop_event.is_set():
-            try:
-                await self._check_all()
-            except Exception:
-                logger.exception("Health check round failed")
-            try:
-                await asyncio.wait_for(
-                    self._stop_event.wait(),
-                    timeout=self.settings.health_check_interval_seconds,
-                )
-            except asyncio.TimeoutError:
-                pass
-
-    async def _check_all(self) -> None:
-        """Check every account concurrently."""
-        accounts = self.account_manager.accounts
-        if not accounts:
-            return
-
-        logger.debug("Starting health check round for %d accounts", len(accounts))
-        await asyncio.gather(*(self._check_one(acc) for acc in accounts))
-
-    async def _check_one(self, account) -> None:
-        """Check a single account by listing models."""
-        if account.state.cooldown_until:
-            from datetime import datetime, timezone
-
-            if datetime.now(timezone.utc) < account.state.cooldown_until:
-                return
-
-        url = f"{self.settings.ollama_api_base}/models"
-        headers = {
-            "Authorization": f"Bearer {account.api_key}",
-            "Accept": "application/json",
-        }
-
-        try:
-            async with httpx.AsyncClient(timeout=30.0) as client:
-                response = await client.get(url, headers=headers)
-        except httpx.TimeoutException:
-            await self.account_manager.mark_unhealthy(account, "Health check timeout")
-            return
-        except Exception as exc:
-            await self.account_manager.mark_unhealthy(account, f"Health check error: {exc}")
-            return
+        response_time_ms = (time.time() - start_time) * 1000
 
         if response.status_code == 200:
-            await self.account_manager.mark_healthy(account)
-            logger.debug("Account %d health check passed", account.index)
+            logger.debug(
+                f"Health check passed for account {index} "
+                f"({response_time_ms:.1f}ms)"
+            )
+            # If account was not healthy, mark it healthy
+            if account.status.state != AccountState.HEALTHY:
+                await account_pool.update_account_state(index, AccountState.HEALTHY)
+            return HealthCheckResult(
+                index=index,
+                healthy=True,
+                state=AccountState.HEALTHY,
+                response_time_ms=response_time_ms,
+                model_available=True,
+            )
+
+        # Non-200 response
+        error_msg = f"HTTP {response.status_code}"
+        try:
+            data = response.json()
+            if "error" in data:
+                err = data["error"]
+                error_msg = err.get("message", str(err)) if isinstance(err, dict) else str(err)
+        except Exception:
+            pass
+
+        if response.status_code == 429:
+            state = AccountState.RATE_LIMITED
         elif response.status_code in (401, 403):
-            await self.account_manager.mark_failure(
-                account, status_code=response.status_code, error_message="Invalid API key"
-            )
+            state = AccountState.AUTH_ERROR
         else:
-            await self.account_manager.mark_unhealthy(
-                account, f"HTTP {response.status_code}"
-            )
+            state = AccountState.TEMPORARILY_UNAVAILABLE
+
+        await account_pool.update_account_state(index, state, error=error_msg)
+        return HealthCheckResult(
+            index=index,
+            healthy=False,
+            state=state,
+            response_time_ms=response_time_ms,
+            error=error_msg,
+        )
+
+    except httpx.TimeoutException:
+        await account_pool.update_account_state(
+            index, AccountState.TEMPORARILY_UNAVAILABLE, error="Health check timeout"
+        )
+        return HealthCheckResult(
+            index=index,
+            healthy=False,
+            state=AccountState.TEMPORARILY_UNAVAILABLE,
+            error="Timeout",
+        )
+
+    except httpx.ConnectError as e:
+        await account_pool.update_account_state(
+            index, AccountState.TEMPORARILY_UNAVAILABLE, error=f"Connection error: {str(e)}"
+        )
+        return HealthCheckResult(
+            index=index,
+            healthy=False,
+            state=AccountState.TEMPORARILY_UNAVAILABLE,
+            error=f"Connection error: {str(e)}",
+        )
+
+    except Exception as e:
+        await account_pool.update_account_state(
+            index, AccountState.TEMPORARILY_UNAVAILABLE, error=f"Health check error: {str(e)}"
+        )
+        return HealthCheckResult(
+            index=index,
+            healthy=False,
+            state=AccountState.TEMPORARILY_UNAVAILABLE,
+            error=str(e),
+        )
+
+
+async def run_health_checks():
+    """Run health checks for all accounts."""
+    if account_pool is None:
+        return []
+
+    tasks = [
+        check_account_health(i) for i in range(account_pool.total_accounts)
+    ]
+    results = await asyncio.gather(*tasks, return_exceptions=True)
+    return results
+
+
+async def health_monitor_loop():
+    """Background task that continuously monitors account health."""
+    logger.info("Health monitor started")
+
+    while True:
+        try:
+            results = await run_health_checks()
+            healthy_count = sum(1 for r in results if isinstance(r, HealthCheckResult) and r.healthy)
+            total = len(results)
+            logger.info(f"Health check complete: {healthy_count}/{total} accounts healthy")
+
+            for result in results:
+                if isinstance(result, HealthCheckResult) and not result.healthy:
+                    logger.warning(
+                        f"Account {result.index} unhealthy: {result.state.value} - {result.error}"
+                    )
+
+        except Exception as e:
+            logger.error(f"Health monitor error: {e}")
+
+        await asyncio.sleep(settings.health_check_interval_seconds)

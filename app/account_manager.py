@@ -1,182 +1,227 @@
-"""Thread-safe account pool with health-aware round-robin selection."""
+"""Account pool management with health tracking and failover logic."""
 
 import asyncio
 import logging
-from dataclasses import dataclass, field
-from datetime import datetime, timedelta, timezone
-from typing import List, Optional
+import time
+from datetime import datetime, timedelta
+from typing import Dict, List, Optional, Tuple
 
-from app.config import Settings
+from app.config import settings
 from app.models import AccountState, AccountStatus
 
 logger = logging.getLogger(__name__)
 
 
-@dataclass
 class Account:
-    """Internal account representation."""
+    """Represents a single Ollama Cloud API account."""
 
-    index: int
-    api_key: str
-    state: AccountState = field(default_factory=lambda: AccountState(index=0, api_key_preview=""))
-    lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    def __init__(self, index: int, api_key: str):
+        self.index = index
+        self.api_key = api_key
+        self.status = AccountStatus(index=index, state=AccountState.UNKNOWN)
+        self._lock = asyncio.Lock()
+        self._in_flight = 0
 
-
-class AccountManager:
-    """Manages a pool of Ollama Cloud API accounts with failover support."""
-
-    def __init__(self, settings: Settings) -> None:
-        self.settings = settings
-        self._accounts: List[Account] = []
-        self._round_robin_index: int = -1
-        self._global_lock = asyncio.Lock()
-        self._init_accounts()
-
-    def _init_accounts(self) -> None:
-        keys = self.settings.api_keys_list
-        if not keys:
-            logger.warning("No OLLAMA_API_KEYS configured. Gateway will not function.")
-            return
-
-        for idx, key in enumerate(keys):
-            preview = f"{key[:4]}...{key[-4:]}" if len(key) >= 8 else "****"
-            account = Account(
-                index=idx,
-                api_key=key,
-                state=AccountState(
-                    index=idx,
-                    api_key_preview=preview,
-                    status=AccountStatus.UNKNOWN,
-                ),
-            )
-            self._accounts.append(account)
-            logger.info("Registered Ollama account %d (%s)", idx, preview)
+    def __repr__(self) -> str:
+        return f"Account(index={self.index}, state={self.status.state.value})"
 
     @property
-    def accounts(self) -> List[Account]:
-        return self._accounts
-
-    def _is_available(self, account: Account) -> bool:
-        """Check if account is currently usable (not in cooldown, not disabled)."""
-        if account.state.status == AccountStatus.DISABLED:
+    def is_available(self) -> bool:
+        """Check if the account is currently available for requests."""
+        if self.status.state == AccountState.DISABLED:
             return False
-        if account.state.cooldown_until:
-            if datetime.now(timezone.utc) < account.state.cooldown_until:
-                return False
-            # Cooldown expired; mark for re-evaluation
-            account.state.cooldown_until = None
-            account.state.status = AccountStatus.UNKNOWN
-        return account.state.status in (
-            AccountStatus.HEALTHY,
-            AccountStatus.UNKNOWN,
-        )
+        if self.status.cooldown_until and datetime.utcnow() < self.status.cooldown_until:
+            return False
+        if self.status.state in (
+            AccountState.HEALTHY,
+            AccountState.UNKNOWN,
+        ):
+            return True
+        # For temporarily unavailable states, check if cooldown has expired
+        if self.status.state in (
+            AccountState.RATE_LIMITED,
+            AccountState.TOKEN_EXHAUSTED,
+            AccountState.TEMPORARILY_UNAVAILABLE,
+            AccountState.AUTH_ERROR,
+        ):
+            if self.status.cooldown_until and datetime.utcnow() >= self.status.cooldown_until:
+                return True
+        return False
 
-    async def get_next_available_account(self) -> Optional[Account]:
-        """Select the next healthy account using round-robin."""
-        async with self._global_lock:
-            if not self._accounts:
-                return None
-
-            for _ in range(len(self._accounts)):
-                self._round_robin_index = (self._round_robin_index + 1) % len(self._accounts)
-                candidate = self._accounts[self._round_robin_index]
-                if self._is_available(candidate):
-                    return candidate
-
-            return None
-
-    async def mark_success(self, account: Account) -> None:
-        """Mark an account as having served a successful request."""
-        async with account.lock:
-            account.state.status = AccountStatus.HEALTHY
-            account.state.request_count += 1
-            account.state.success_count += 1
-            account.state.consecutive_failures = 0
-            account.state.last_error = None
-            account.state.last_status_code = None
+    async def mark_success(self):
+        """Mark the account as having successfully handled a request."""
+        async with self._lock:
+            self.status.success_count += 1
+            self.status.consecutive_failures = 0
+            self.status.last_used = datetime.utcnow()
+            if self.status.state != AccountState.HEALTHY:
+                self.status.state = AccountState.HEALTHY
+                self.status.cooldown_until = None
+                self.status.last_error = None
+                logger.info(f"Account {self.index} recovered to HEALTHY")
 
     async def mark_failure(
         self,
-        account: Account,
-        status_code: Optional[int] = None,
-        error_message: Optional[str] = None,
-    ) -> None:
-        """Mark an account as having failed a request, applying cooldown if needed."""
-        async with account.lock:
-            account.state.request_count += 1
-            account.state.failure_count += 1
-            account.state.consecutive_failures += 1
-            account.state.last_status_code = status_code
-            account.state.last_error = error_message
+        error: str,
+        state: AccountState = AccountState.TEMPORARILY_UNAVAILABLE,
+        cooldown_seconds: Optional[float] = None,
+    ):
+        """Mark the account as having failed a request."""
+        async with self._lock:
+            self.status.failure_count += 1
+            self.status.consecutive_failures += 1
+            self.status.last_error = error
+            self.status.last_used = datetime.utcnow()
 
-            # Determine new status and cooldown based on error type
-            new_status, cooldown_seconds = self._classify_error(status_code, error_message)
+            cooldown = cooldown_seconds or settings.account_cooldown_seconds
 
-            if new_status == AccountStatus.AUTH_ERROR:
-                cooldown_seconds = cooldown_seconds or self.settings.account_cooldown_seconds * 5
-            elif new_status == AccountStatus.RATE_LIMITED:
-                cooldown_seconds = cooldown_seconds or self.settings.account_cooldown_seconds
-            elif new_status == AccountStatus.TOKEN_EXHAUSTED:
-                cooldown_seconds = cooldown_seconds or self.settings.account_cooldown_seconds * 3
-            elif status_code and status_code >= 500:
-                cooldown_seconds = cooldown_seconds or self.settings.account_cooldown_seconds // 2
-            else:
-                cooldown_seconds = cooldown_seconds or self.settings.account_cooldown_seconds
+            # Exponential backoff for repeated failures
+            if self.status.consecutive_failures > 1:
+                cooldown *= min(2 ** (self.status.consecutive_failures - 1), 8)
 
-            account.state.status = new_status
-            account.state.cooldown_until = datetime.now(timezone.utc) + timedelta(
-                seconds=cooldown_seconds
-            )
+            self.status.cooldown_until = datetime.utcnow() + timedelta(seconds=cooldown)
+            self.status.state = state
 
             logger.warning(
-                "Account %d marked %s (HTTP %s, cooldown %ss): %s",
-                account.index,
-                new_status.value,
-                status_code,
-                cooldown_seconds,
-                error_message,
+                f"Account {self.index} marked {state.value}: {error}. "
+                f"Cooldown until {self.status.cooldown_until.isoformat()}"
             )
 
-    def _classify_error(
+    async def acquire(self) -> bool:
+        """Try to acquire a slot for this account."""
+        async with self._lock:
+            if self._in_flight >= settings.max_concurrent_requests_per_account:
+                return False
+            self._in_flight += 1
+            return True
+
+    async def release(self):
+        """Release a slot for this account."""
+        async with self._lock:
+            self._in_flight = max(0, self._in_flight - 1)
+
+
+class AccountPool:
+    """Manages a pool of Ollama Cloud API accounts with failover logic."""
+
+    def __init__(self, api_keys: List[str]):
+        self.accounts: List[Account] = [
+            Account(index=i, api_key=key) for i, key in enumerate(api_keys)
+        ]
+        self._round_robin_index = 0
+        self._lock = asyncio.Lock()
+        self._total_requests = 0
+        self._successful_requests = 0
+        self._failed_requests = 0
+        self._start_time = time.time()
+
+    @property
+    def total_accounts(self) -> int:
+        return len(self.accounts)
+
+    @property
+    def healthy_accounts(self) -> int:
+        return sum(1 for a in self.accounts if a.status.state == AccountState.HEALTHY)
+
+    @property
+    def available_accounts(self) -> int:
+        return sum(1 for a in self.accounts if a.is_available)
+
+    @property
+    def total_requests(self) -> int:
+        return self._total_requests
+
+    @property
+    def successful_requests(self) -> int:
+        return self._successful_requests
+
+    @property
+    def failed_requests(self) -> int:
+        return self._failed_requests
+
+    @property
+    def uptime_seconds(self) -> float:
+        return time.time() - self._start_time
+
+    async def get_next_account(self, excluded_indices: Optional[List[int]] = None) -> Optional[Account]:
+        """Get the next available account using round-robin selection."""
+        excluded = set(excluded_indices or [])
+        async with self._lock:
+            for _ in range(len(self.accounts)):
+                idx = self._round_robin_index % len(self.accounts)
+                self._round_robin_index = (self._round_robin_index + 1) % len(self.accounts)
+
+                if idx in excluded:
+                    continue
+
+                account = self.accounts[idx]
+                if account.is_available and await account.acquire():
+                    self._total_requests += 1
+                    return account
+
+        return None
+
+    async def release_account(self, account: Account):
+        """Release an account back to the pool."""
+        await account.release()
+
+    async def record_success(self, account: Account):
+        """Record a successful request."""
+        await account.mark_success()
+        self._successful_requests += 1
+
+    async def record_failure(
         self,
-        status_code: Optional[int],
-        error_message: Optional[str],
-    ) -> tuple[AccountStatus, Optional[float]]:
-        """Classify an HTTP error into an account status."""
-        msg = (error_message or "").lower()
+        account: Account,
+        error: str,
+        state: AccountState = AccountState.TEMPORARILY_UNAVAILABLE,
+        cooldown_seconds: Optional[float] = None,
+    ):
+        """Record a failed request."""
+        await account.mark_failure(error, state, cooldown_seconds)
+        self._failed_requests += 1
 
-        if status_code in (401, 403):
-            return AccountStatus.AUTH_ERROR, None
+    def get_all_statuses(self) -> List[AccountStatus]:
+        """Get the status of all accounts."""
+        return [acc.status for acc in self.accounts]
 
-        if status_code == 429:
-            if any(k in msg for k in ("quota", "exhausted", "limit reached", "usage", "token")):
-                return AccountStatus.TOKEN_EXHAUSTED, None
-            return AccountStatus.RATE_LIMITED, None
+    def get_safe_statuses(self) -> List[Dict]:
+        """Get safe (no API keys) status info for all accounts."""
+        result = []
+        for acc in self.accounts:
+            status = acc.status.model_dump()
+            status["available"] = acc.is_available
+            status["in_flight"] = acc._in_flight
+            result.append(status)
+        return result
 
-        if status_code and status_code >= 500:
-            return AccountStatus.TEMPORARILY_UNAVAILABLE, None
+    async def update_account_state(self, index: int, state: AccountState, error: Optional[str] = None):
+        """Update the state of a specific account (used by health checks)."""
+        if 0 <= index < len(self.accounts):
+            account = self.accounts[index]
+            async with account._lock:
+                account.status.state = state
+                account.status.last_checked = datetime.utcnow()
+                if error:
+                    account.status.last_error = error
+                if state == AccountState.HEALTHY:
+                    account.status.consecutive_failures = 0
+                    account.status.cooldown_until = None
 
-        if any(k in msg for k in ("connection", "timeout", "reset", "refused", "dns")):
-            return AccountStatus.TEMPORARILY_UNAVAILABLE, None
+    def get_account_by_index(self, index: int) -> Optional[Account]:
+        """Get an account by its index."""
+        if 0 <= index < len(self.accounts):
+            return self.accounts[index]
+        return None
 
-        return AccountStatus.TEMPORARILY_UNAVAILABLE, None
 
-    async def mark_healthy(self, account: Account) -> None:
-        """Explicitly mark an account as healthy (used by health checks)."""
-        async with account.lock:
-            account.state.status = AccountStatus.HEALTHY
-            account.state.cooldown_until = None
-            account.state.last_error = None
-            account.state.last_status_code = None
-            account.state.consecutive_failures = 0
-            account.state.last_checked = datetime.now(timezone.utc)
+# Global account pool instance
+account_pool: Optional[AccountPool] = None
 
-    async def mark_unhealthy(self, account: Account, reason: str) -> None:
-        """Mark an account as temporarily unavailable from health check."""
-        async with account.lock:
-            account.state.status = AccountStatus.TEMPORARILY_UNAVAILABLE
-            account.state.last_error = reason
-            account.state.last_checked = datetime.now(timezone.utc)
-            account.state.cooldown_until = datetime.now(timezone.utc) + timedelta(
-                seconds=self.settings.account_cooldown_seconds
-            )
+
+def initialize_pool(api_keys: List[str]) -> AccountPool:
+    """Initialize the global account pool."""
+    global account_pool
+    account_pool = AccountPool(api_keys)
+    logger.info(f"Initialized account pool with {len(api_keys)} account(s)")
+    return account_pool

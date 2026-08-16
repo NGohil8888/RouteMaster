@@ -1,13 +1,12 @@
-"""Pydantic models for the Ollama Cloud API Gateway."""
+"""Data models for the Ollama Cloud API Gateway."""
 
-from datetime import datetime
 from enum import Enum
-from typing import Any, Dict, Optional
-
+from typing import Any, Dict, List, Optional
+from datetime import datetime
 from pydantic import BaseModel, Field
 
 
-class AccountStatus(str, Enum):
+class AccountState(str, Enum):
     """Possible states for an Ollama Cloud API account."""
 
     HEALTHY = "healthy"
@@ -19,46 +18,61 @@ class AccountStatus(str, Enum):
     UNKNOWN = "unknown"
 
 
-class AccountState(BaseModel):
-    """Represents the current state of a single Ollama Cloud API account."""
+class AccountStatus(BaseModel):
+    """Status information for a single Ollama Cloud account."""
 
-    index: int
-    api_key_preview: str
-    status: AccountStatus = AccountStatus.UNKNOWN
-    last_checked: Optional[datetime] = None
+    index: int = Field(..., description="Account index in the pool")
+    state: AccountState = Field(default=AccountState.UNKNOWN)
     last_error: Optional[str] = None
-    last_status_code: Optional[int] = None
-    cooldown_until: Optional[datetime] = None
-    request_count: int = 0
-    success_count: int = 0
+    last_used: Optional[datetime] = None
+    last_checked: Optional[datetime] = None
     failure_count: int = 0
+    success_count: int = 0
+    cooldown_until: Optional[datetime] = None
+    rate_limit_reset: Optional[datetime] = None
     consecutive_failures: int = 0
 
     class Config:
         json_encoders = {datetime: lambda v: v.isoformat() if v else None}
 
 
-class HealthResponse(BaseModel):
-    """Response model for the /health endpoint."""
+class GatewayStatus(BaseModel):
+    """Overall gateway status response."""
 
-    status: str
-    accounts: Dict[str, int]
-    account_details: list
-    uptime_seconds: float
-
-
-class StatusResponse(BaseModel):
-    """Response model for the /status endpoint."""
-
-    status: str
+    status: str = "healthy"
     version: str = "1.0.0"
-    accounts_total: int
-    accounts_healthy: int
-    accounts_unavailable: int
-    upstream_url: str
+    uptime_seconds: float = 0.0
+    accounts: Dict[str, Any] = Field(default_factory=dict)
+    total_requests: int = 0
+    successful_requests: int = 0
+    failed_requests: int = 0
 
 
-class ProxyErrorResponse(BaseModel):
-    """OpenAI-compatible error response."""
+class HealthCheckResult(BaseModel):
+    """Result of a health check for a single account."""
 
-    error: Dict[str, Any]
+    index: int
+    healthy: bool
+    state: AccountState
+    response_time_ms: Optional[float] = None
+    error: Optional[str] = None
+    model_available: Optional[bool] = None
+
+
+class ProxyRequest(BaseModel):
+    """Internal proxy request tracking."""
+
+    method: str
+    path: str
+    headers: Dict[str, str] = Field(default_factory=dict)
+    body: Optional[bytes] = None
+    stream: bool = False
+
+
+class ProxyResponse(BaseModel):
+    """Internal proxy response tracking."""
+
+    status_code: int
+    headers: Dict[str, str] = Field(default_factory=dict)
+    content: Optional[bytes] = None
+    stream: bool = False
