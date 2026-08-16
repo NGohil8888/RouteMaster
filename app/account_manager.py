@@ -225,3 +225,14 @@ def initialize_pool(api_keys: List[str]) -> AccountPool:
     account_pool = AccountPool(api_keys)
     logger.info(f"Initialized account pool with {len(api_keys)} account(s)")
     return account_pool
+
+
+def get_account_pool() -> Optional[AccountPool]:
+    """Return the current global account pool.
+
+    Always call this instead of importing `account_pool` by name — a plain
+    `from app.account_manager import account_pool` binds to whatever the
+    value was at import time (None, since this module hasn't initialized
+    the pool yet) and will never see later reassignment.
+    """
+    return account_pool

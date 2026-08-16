@@ -11,7 +11,7 @@ from fastapi.responses import StreamingResponse
 from starlette.responses import Response
 
 from app.config import settings
-from app.account_manager import Account, AccountPool, AccountState, account_pool
+from app.account_manager import Account, AccountPool, AccountState, get_account_pool
 from app.models import ProxyRequest
 
 logger = logging.getLogger(__name__)
@@ -100,8 +100,7 @@ async def _make_request(
 ) -> httpx.Response:
     """Make a single request to Ollama Cloud."""
     request_headers = dict(headers)
-    request_headers["Authorization"] = f"Bearer {account.api_key}"
-    # Remove any existing Authorization header from client
+    # Strip any client-supplied Authorization header before injecting our own
     request_headers.pop("authorization", None)
     request_headers.pop("Authorization", None)
     request_headers["Authorization"] = f"Bearer {account.api_key}"
@@ -129,6 +128,7 @@ async def _make_request(
 async def _stream_response(
     response: httpx.Response,
     account: Account,
+    client: httpx.AsyncClient,
 ) -> AsyncGenerator[bytes, None]:
     """Stream response chunks from upstream to client."""
     try:
@@ -139,6 +139,7 @@ async def _stream_response(
         raise
     finally:
         await response.aclose()
+        await client.aclose()
 
 
 async def proxy_request(
@@ -149,6 +150,7 @@ async def proxy_request(
     query_string: str = "",
 ) -> Response:
     """Proxy a request to Ollama Cloud with automatic failover."""
+    account_pool = get_account_pool()
     if account_pool is None:
         raise HTTPException(status_code=503, detail="Account pool not initialized")
 
@@ -175,6 +177,7 @@ async def proxy_request(
         client = get_ollama_client(
             timeout=settings.stream_timeout_seconds if stream else settings.request_timeout_seconds
         )
+        client_handed_off = False
 
         try:
             response = await _make_request(
@@ -196,9 +199,10 @@ async def proxy_request(
                 )
 
                 if stream:
-                    # Return streaming response
+                    # Return streaming response; the generator now owns the client
+                    client_handed_off = True
                     return StreamingResponse(
-                        content=_stream_response(response, acct),
+                        content=_stream_response(response, acct, client),
                         status_code=response.status_code,
                         headers=dict(response.headers),
                         media_type=response.headers.get("content-type", "text/event-stream"),
@@ -227,10 +231,14 @@ async def proxy_request(
 
             elif response.status_code == RATE_LIMIT_STATUS:
                 cooldown = _extract_cooldown_from_headers(dict(response.headers))
+                is_quota_exhausted = any(
+                    kw in error_msg.lower() for kw in ("quota", "token limit", "credit")
+                )
+                state = AccountState.TOKEN_EXHAUSTED if is_quota_exhausted else AccountState.RATE_LIMITED
                 await account_pool.record_failure(
                     acct,
-                    f"Rate limited: {error_msg}",
-                    AccountState.RATE_LIMITED,
+                    f"{state.value.replace('_', ' ').title()}: {error_msg}",
+                    state,
                     cooldown_seconds=cooldown,
                 )
                 excluded_indices.append(acct.index)
@@ -309,7 +317,7 @@ async def proxy_request(
 
         finally:
             await account_pool.release_account(acct)
-            if not stream:
+            if not client_handed_off:
                 await client.aclose()
 
     # All retries exhausted or no accounts available

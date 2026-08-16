@@ -8,7 +8,7 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
 from app.config import settings
-from app.account_manager import initialize_pool, account_pool
+from app.account_manager import initialize_pool, get_account_pool
 from app.health import health_monitor_loop
 from app.logging_config import setup_logging
 from app.proxy import proxy_request
@@ -52,6 +52,7 @@ app = FastAPI(
 @app.get("/health")
 async def health_check():
     """Basic health check endpoint."""
+    account_pool = get_account_pool()
     if account_pool is None:
         return JSONResponse(
             status_code=503,
@@ -73,6 +74,7 @@ async def health_check():
 @app.get("/status")
 async def gateway_status():
     """Detailed gateway status endpoint (safe, no secrets)."""
+    account_pool = get_account_pool()
     if account_pool is None:
         return JSONResponse(
             status_code=503,

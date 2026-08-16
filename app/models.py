@@ -3,7 +3,7 @@
 from enum import Enum
 from typing import Any, Dict, List, Optional
 from datetime import datetime
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class AccountState(str, Enum):
@@ -32,8 +32,9 @@ class AccountStatus(BaseModel):
     rate_limit_reset: Optional[datetime] = None
     consecutive_failures: int = 0
 
-    class Config:
-        json_encoders = {datetime: lambda v: v.isoformat() if v else None}
+    model_config = ConfigDict(
+        json_encoders={datetime: lambda v: v.isoformat() if v else None}
+    )
 
 
 class GatewayStatus(BaseModel):

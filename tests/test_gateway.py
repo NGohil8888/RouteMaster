@@ -12,7 +12,7 @@ from starlette.responses import Response
 
 from app.main import app
 from app.config import settings
-from app.account_manager import AccountPool, AccountState, initialize_pool, account_pool
+from app.account_manager import AccountPool, AccountState, initialize_pool
 from app.proxy import proxy_request
 from app.health import check_account_health
 
@@ -27,12 +27,11 @@ def client():
 def mock_settings():
     """Mock settings with test API keys."""
     with patch.object(settings, "ollama_api_keys", "key1,key2,key3"):
-        with patch.object(settings, "api_keys_list", ["key1", "key2", "key3"]):
-            with patch.object(settings, "ollama_base_url", "https://ollama.com"):
-                with patch.object(settings, "max_retries", 3):
-                    with patch.object(settings, "request_timeout_seconds", 5):
-                        with patch.object(settings, "account_cooldown_seconds", 1):
-                            yield settings
+        with patch.object(settings, "ollama_base_url", "https://ollama.com"):
+            with patch.object(settings, "max_retries", 3):
+                with patch.object(settings, "request_timeout_seconds", 5):
+                    with patch.object(settings, "account_cooldown_seconds", 1):
+                        yield settings
 
 
 @pytest.fixture
@@ -245,9 +244,16 @@ class TestProxy:
             mock_response.aiter_bytes = fake_aiter
             mock_response.aclose = AsyncMock()
 
+            from unittest.mock import MagicMock
+
+            stream_cm = MagicMock()
+            stream_cm.__aenter__ = AsyncMock(return_value=mock_response)
+            stream_cm.__aexit__ = AsyncMock()
+
             mock_client = AsyncMock()
-            mock_client.stream.return_value.__aenter__ = AsyncMock(return_value=mock_response)
-            mock_client.stream.return_value.__aexit__ = AsyncMock()
+            # .stream() itself is a plain (non-async) method in real httpx,
+            # returning an async context manager - not a coroutine.
+            mock_client.stream = MagicMock(return_value=stream_cm)
             mock_client.aclose = AsyncMock()
             mock_client_factory.return_value = mock_client
 

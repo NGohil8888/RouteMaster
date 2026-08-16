@@ -8,7 +8,7 @@ from typing import List
 import httpx
 
 from app.config import settings
-from app.account_manager import AccountState, account_pool
+from app.account_manager import AccountState, get_account_pool
 from app.models import HealthCheckResult
 
 logger = logging.getLogger(__name__)
@@ -16,6 +16,7 @@ logger = logging.getLogger(__name__)
 
 async def check_account_health(index: int) -> HealthCheckResult:
     """Check the health of a single Ollama Cloud account."""
+    account_pool = get_account_pool()
     if account_pool is None:
         return HealthCheckResult(
             index=index,
@@ -121,6 +122,7 @@ async def check_account_health(index: int) -> HealthCheckResult:
 
 async def run_health_checks():
     """Run health checks for all accounts."""
+    account_pool = get_account_pool()
     if account_pool is None:
         return []
 

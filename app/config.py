@@ -3,7 +3,7 @@
 import os
 from typing import List
 
-from pydantic import Field, field_validator
+from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -40,14 +40,6 @@ class Settings(BaseSettings):
     # Request settings
     stream_timeout_seconds: float = Field(default=300.0, alias="STREAM_TIMEOUT_SECONDS")
     max_concurrent_requests_per_account: int = Field(default=10, alias="MAX_CONCURRENT_REQUESTS_PER_ACCOUNT")
-
-    @field_validator("ollama_api_keys")
-    @classmethod
-    def validate_api_keys(cls, v: str) -> str:
-        """Validate that at least one API key is provided."""
-        if not v or not v.strip():
-            raise ValueError("At least one Ollama API key must be provided via OLLAMA_API_KEYS")
-        return v
 
     @property
     def api_keys_list(self) -> List[str]:
