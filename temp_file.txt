@@ -1,2 +1,0 @@
-
-2. Create a Drop down to select the API provider for the which is the provider example Ollama Cloude, claude, ChatGPT, Kimi and etc i know currently this project is only confierd for ollama but we will improve as we move ahead so this does not need to be rushed i will ask you to do it also a custom provider which user can add on its own 
