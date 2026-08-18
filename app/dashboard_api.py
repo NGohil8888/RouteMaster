@@ -8,7 +8,7 @@ from typing import Optional
 
 import httpx
 from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from app import key_store, runtime_config
 from app.account_manager import get_account_pool, initialize_pool_from_records
@@ -29,13 +29,17 @@ class KeyUpdateIn(BaseModel):
     api_key: Optional[str] = None
 
 
+# Bounds for runtime-editable settings. These mirror what's safe for the
+# proxy/health subsystems: e.g. max_retries=0 hangs the gateway forever,
+# max_concurrent_requests_per_account=0 makes every request 503, and a
+# negative timeout makes httpx raise immediately.
 class SettingsIn(BaseModel):
-    max_retries: Optional[int] = None
-    account_cooldown_seconds: Optional[float] = None
-    health_check_interval_seconds: Optional[float] = None
-    request_timeout_seconds: Optional[float] = None
-    stream_timeout_seconds: Optional[float] = None
-    max_concurrent_requests_per_account: Optional[int] = None
+    max_retries: Optional[int] = Field(default=None, ge=1, le=64)
+    account_cooldown_seconds: Optional[float] = Field(default=None, ge=0.0, le=86400.0)
+    health_check_interval_seconds: Optional[float] = Field(default=None, ge=1.0, le=3600.0)
+    request_timeout_seconds: Optional[float] = Field(default=None, ge=1.0, le=3600.0)
+    stream_timeout_seconds: Optional[float] = Field(default=None, ge=1.0, le=86400.0)
+    max_concurrent_requests_per_account: Optional[int] = Field(default=None, ge=1, le=10000)
 
 
 async def _resync_pool():
@@ -187,5 +191,11 @@ async def get_settings_endpoint():
 
 @router.put("/settings")
 async def update_settings_endpoint(payload: SettingsIn):
+    # SettingsIn already enforces Field(ge/le) bounds, so passing payload
+    # straight through is safe - any value the dashboard can submit has
+    # already been validated.
     updates = {k: v for k, v in payload.model_dump().items() if v is not None}
-    return await runtime_config.update_settings(updates)
+    try:
+        return await runtime_config.update_settings(updates)
+    except runtime_config.SettingsValidationError as e:
+        raise HTTPException(status_code=400, detail=str(e))

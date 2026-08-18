@@ -348,3 +348,144 @@ class TestConcurrency:
             assert len(results) == 10
 
         asyncio.run(run())
+
+
+class TestImprovements:
+    """Regression tests for behavior changes flagged in the audit:
+
+    - #1 streaming usage accounting (#1 in review)
+    - #2 plan-gate keyword expansion (#2 in review)
+    - #5 runtime settings bounds (#5 in review)
+    """
+
+    def test_ensure_include_usage_injects_stream_options(self):
+        from app.proxy import _ensure_include_usage
+
+        body = b'{"model":"gemma3:4b","messages":[],"stream":true}'
+        out = _ensure_include_usage(body)
+        import json as _json
+        parsed = _json.loads(out)
+        assert parsed["stream"] is True
+        assert parsed["stream_options"]["include_usage"] is True
+        # The body must remain valid JSON, no leftover malformation.
+        assert isinstance(parsed["messages"], list)
+
+    def test_ensure_include_usage_preserves_client_stream_options(self):
+        from app.proxy import _ensure_include_usage
+
+        body = b'{"model":"x","messages":[],"stream":true,"stream_options":{"include_obfuscation":true}}'
+        out = _ensure_include_usage(body)
+        import json as _json
+        parsed = _json.loads(out)
+        assert parsed["stream_options"]["include_usage"] is True
+        # Existing client-side flags survive untouched.
+        assert parsed["stream_options"]["include_obfuscation"] is True
+
+    def test_ensure_include_usage_no_op_for_non_stream(self):
+        from app.proxy import _ensure_include_usage
+
+        body = b'{"model":"x","messages":[],"stream":false}'
+        # Same bytes in, same bytes out.
+        assert _ensure_include_usage(body) == body
+
+    def test_ensure_include_usage_handles_garbage(self):
+        from app.proxy import _ensure_include_usage
+
+        assert _ensure_include_usage(b"not json at all") == b"not json at all"
+        assert _ensure_include_usage(None) is None
+        assert _ensure_include_usage(b"") == b""
+
+    def test_extract_streaming_usage_finds_final_chunk(self):
+        from app.proxy import _extract_streaming_usage
+
+        chunks = [
+            b'data: {"id":"1","choices":[{"delta":{"content":"hi"}}]}\n\n',
+            b'data: {"id":"2","choices":[{"delta":{"content":" there"}}]}\n\n',
+            b'data: {"id":"3","choices":[],"usage":{"prompt_tokens":12,"completion_tokens":7,"total_tokens":19}}\n\n',
+            b'data: [DONE]\n\n',
+        ]
+        usage = _extract_streaming_usage(chunks)
+        assert usage is not None
+        assert usage["prompt_tokens"] == 12
+        assert usage["completion_tokens"] == 7
+        assert usage["total_tokens"] == 19
+
+    def test_extract_streaming_usage_handles_missing(self):
+        from app.proxy import _extract_streaming_usage
+
+        # Stream finished without ever emitting usage.
+        chunks = [b'data: {"id":"1","choices":[{"delta":{"content":"hi"}}]}\n\n']
+        assert _extract_streaming_usage(chunks) is None
+
+    def test_extract_streaming_usage_handles_junk(self):
+        from app.proxy import _extract_streaming_usage
+
+        chunks = [b"this is not sse at all\n\n", b"\xff\xfe garbage \xff\xff\n"]
+        assert _extract_streaming_usage(chunks) is None
+
+    def test_looks_plan_gated_catches_variants(self):
+        from app.proxy import _looks_plan_gated
+
+        # Pre-existing triggers.
+        assert _looks_plan_gated("This model requires a subscription to access")
+        assert _looks_plan_gated("This model needs upgrade for access")
+        # New variants the old code missed.
+        assert _looks_plan_gated("This model requires a higher plan")
+        assert _looks_plan_gated("Feature_unavailable on the free tier")
+        assert _looks_plan_gated("Model X is not available on your plan")
+        assert _looks_plan_gated("not entitled to this model")
+        # Case-insensitive.
+        assert _looks_plan_gated("REQUIRES A SUBSCRIPTION")
+        # Negative cases.
+        assert not _looks_plan_gated("rate limit exceeded")
+        assert not _looks_plan_gated("invalid api key")
+        assert not _looks_plan_gated("")
+        assert not _looks_plan_gated(None)
+
+    @pytest.mark.asyncio
+    async def test_settings_validation_rejects_zero(self):
+        # Validation has to happen at the dashboard layer AND in runtime_config
+        # so we cover both.
+        from app import runtime_config
+        from app.dashboard_api import SettingsIn
+
+        # The Pydantic model rejects 0.
+        try:
+            SettingsIn(max_retries=0)
+        except Exception:
+            pass
+        else:
+            raise AssertionError("SettingsIn should reject max_retries=0")
+
+        # runtime_config rejects the same.
+        try:
+            await runtime_config.update_settings({"max_retries": 0})
+        except runtime_config.SettingsValidationError:
+            pass
+        else:
+            raise AssertionError("runtime_config.update_settings should reject max_retries=0")
+
+    @pytest.mark.asyncio
+    async def test_settings_validation_rejects_negative(self):
+        from app import runtime_config
+
+        try:
+            await runtime_config.update_settings({"request_timeout_seconds": -5.0})
+        except runtime_config.SettingsValidationError:
+            pass
+        else:
+            raise AssertionError("runtime_config.update_settings should reject negative timeouts")
+
+    @pytest.mark.asyncio
+    async def test_settings_validation_accepts_in_range(self, tmp_path):
+        import app.store as store
+        from app import runtime_config
+
+        original = store.DATA_DIR
+        store.DATA_DIR = tmp_path / "data"
+        store.DATA_DIR.mkdir()
+        try:
+            updated = await runtime_config.update_settings({"max_retries": 5})
+            assert updated["max_retries"] == 5
+        finally:
+            store.DATA_DIR = original
