@@ -217,12 +217,33 @@ async def proxy_request(
                         headers=dict(response.headers),
                     )
 
-            # Handle error response
+            # Handle error response - the body must be explicitly read before it can be
+            # parsed. For streaming requests the response arrives unread, and calling
+            # .json() on it before .aread() silently fails, swallowing the real upstream
+            # error message and leaving only a generic "HTTP 403: Forbidden" behind.
+            await response.aread()
             error_msg = _extract_error_message(response)
             last_error = error_msg
             last_status_code = response.status_code
 
             if response.status_code in AUTH_STATUS_CODES:
+                is_plan_gated = any(
+                    kw in error_msg.lower() for kw in ("subscription", "upgrade for access")
+                )
+                if is_plan_gated:
+                    # This model isn't available on the account's plan - it will fail
+                    # identically on every other account on the same tier, so retrying
+                    # is pointless and would just needlessly cool down every account.
+                    # Return the real upstream message straight to the client instead.
+                    logger.warning(
+                        f"Model not available on account {acct.index}'s plan: {error_msg}"
+                    )
+                    content = response.content
+                    return Response(
+                        content=content,
+                        status_code=response.status_code,
+                        headers=dict(response.headers),
+                    )
                 await account_pool.record_failure(
                     acct,
                     f"Auth error: {error_msg}",

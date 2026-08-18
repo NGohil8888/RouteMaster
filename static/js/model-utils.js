@@ -11,6 +11,8 @@ const FALLBACK_MODELS = [
   'qwen3-coder:480b-cloud',
   'deepseek-v3.1:671b-cloud',
   'gemma4:cloud',
+  'minimax-m3:cloud',
+  'nemotron-3-super:cloud',
 ];
 
 async function fetchLiveModels() {

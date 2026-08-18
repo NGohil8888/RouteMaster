@@ -169,7 +169,7 @@ function renderExamples() {
 async function loadModelOptions() {
   const select = document.getElementById('model-select');
   const hint = document.getElementById('model-picker-hint');
-  const fallback = ['gpt-oss:20b-cloud', 'qwen3-coder:480b-cloud', 'gemma4:cloud'];
+  const fallback = ['gpt-oss:20b-cloud', 'qwen3-coder:480b-cloud', 'gemma4:cloud', 'minimax-m3:cloud', 'nemotron-3-super:cloud'];
 
   let models = [];
   try {

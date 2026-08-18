@@ -1,14 +1,13 @@
 function modelsContentHtml() {
   return `
     <div class="callout">
-      <strong>About "free" vs "needs upgrade":</strong> Ollama Cloud doesn't publish a per-model
-      free/paid flag through its API - every model in your account's list is technically callable
-      on any plan. What actually varies by plan (Free / Pro / Max) is your <em>weekly usage quota</em>,
-      measured in GPU time, not a fixed model paywall. Heavier models simply burn through that quota
-      faster. The "Est. resource tier" column below is a size-based estimate to help you guess which
-      models are quota-friendly on the Free plan - it is <strong>not</strong> an official designation.
-      Check <a href="https://ollama.com/pricing" target="_blank" rel="noopener">ollama.com/pricing</a>
-      for actual plan limits.
+      <strong>About "free" vs "needs upgrade":</strong> Ollama Cloud's model list itself doesn't carry
+      a free/paid flag - every model shows up regardless of plan. But some models genuinely are
+      plan-gated: requesting one you don't have access to returns a specific error
+      ("this model requires a subscription, upgrade for access"). The "Est. resource tier" column is
+      just a size-based guess to help prioritize what to check. Click <strong>Check access</strong> on
+      any model for a real, live answer instead of a guess - it sends a minimal request through your
+      own gateway and reports exactly what Ollama Cloud says.
     </div>
     <div class="panel">
       <div class="panel-header">
@@ -22,15 +21,64 @@ function modelsContentHtml() {
 
 function modelRow(id) {
   const tier = estimateTier(id);
+  const rowId = `model-row-${id.replace(/[^a-zA-Z0-9]/g, '-')}`;
   return `
-    <tr>
+    <tr id="${rowId}" data-model="${escapeHtml(id)}">
       <td class="mono">${escapeHtml(id)}</td>
       <td><span class="tier-badge ${tier.cls}">${tier.label}</span></td>
+      <td class="access-result text-dim">—</td>
       <td>
+        <button class="btn btn-sm btn-check">Check access</button>
         <a class="btn btn-sm" href="/dashboard/playground.html?model=${encodeURIComponent(id)}">Try in Playground</a>
       </td>
     </tr>
   `;
+}
+
+async function checkModelAccess(id, row) {
+  const cell = row.querySelector('.access-result');
+  const btn = row.querySelector('.btn-check');
+  btn.disabled = true;
+  cell.textContent = 'checking…';
+  cell.className = 'access-result text-muted';
+
+  try {
+    const res = await fetch('/v1/chat/completions', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model: id,
+        messages: [{ role: 'user', content: 'hi' }],
+        max_tokens: 1,
+      }),
+    });
+
+    if (res.ok) {
+      cell.textContent = 'available';
+      cell.className = 'access-result';
+      cell.style.color = 'var(--success)';
+    } else {
+      let msg = `HTTP ${res.status}`;
+      try {
+        const body = await res.json();
+        msg = (body.error && (body.error.message || body.error)) || msg;
+      } catch (e) {
+        /* ignore */
+      }
+      const needsUpgrade = /subscription|upgrade for access/i.test(String(msg));
+      cell.textContent = needsUpgrade ? 'needs upgrade' : `error (${res.status})`;
+      cell.className = 'access-result';
+      cell.style.color = needsUpgrade ? 'var(--warning)' : 'var(--danger)';
+      cell.title = String(msg);
+    }
+  } catch (e) {
+    cell.textContent = 'error';
+    cell.className = 'access-result';
+    cell.style.color = 'var(--danger)';
+    cell.title = e.message;
+  } finally {
+    btn.disabled = false;
+  }
 }
 
 async function renderModels() {
@@ -49,9 +97,13 @@ async function renderModels() {
 
   listEl.innerHTML = `
     <table>
-      <thead><tr><th>Model</th><th>Est. resource tier</th><th></th></tr></thead>
+      <thead><tr><th>Model</th><th>Est. resource tier</th><th>Access</th><th></th></tr></thead>
       <tbody>${models.map(modelRow).join('')}</tbody>
     </table>`;
+
+  listEl.querySelectorAll('tr[data-model]').forEach((row) => {
+    row.querySelector('.btn-check').addEventListener('click', () => checkModelAccess(row.dataset.model, row));
+  });
 }
 
 function initModelsPage() {
