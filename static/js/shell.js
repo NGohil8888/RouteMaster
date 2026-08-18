@@ -5,6 +5,7 @@ function shellHtml(active) {
   const items = [
     { key: 'overview', href: '/dashboard/index.html', label: 'Overview' },
     { key: 'keys', href: '/dashboard/keys.html', label: 'API Keys' },
+    { key: 'docs', href: '/dashboard/docs.html', label: 'Quickstart' },
     { key: 'usage', href: '/dashboard/usage.html', label: 'Usage' },
     { key: 'settings', href: '/dashboard/settings.html', label: 'Settings' },
   ];

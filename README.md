@@ -80,7 +80,7 @@ Point any OpenAI-compatible client at the gateway instead of Ollama Cloud direct
 curl http://localhost:8000/v1/chat/completions \
   -H "Content-Type: application/json" \
   -d '{
-    "model": "minimax-m3:cloud",
+    "model": "gemma3:4b",
     "messages": [{"role": "user", "content": "Hello!"}]
   }'
 ```

@@ -59,6 +59,3 @@ htmlcov/
 
 # Docker
 .dockerignore
-
-# Text 
-temp_file.txt
