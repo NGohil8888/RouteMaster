@@ -6,9 +6,10 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 COPY app/ ./app/
+COPY static/ ./static/
 COPY run.py .
 
-RUN useradd -m -u 1000 gateway && chown -R gateway:gateway /app
+RUN mkdir -p /app/data && useradd -m -u 1000 gateway && chown -R gateway:gateway /app
 USER gateway
 
 EXPOSE 8000

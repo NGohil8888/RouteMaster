@@ -1,0 +1,22 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Overview · RouteMaster</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=IBM+Plex+Mono:wght@500;600&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/dashboard/css/style.css" />
+</head>
+<body>
+  <div id="app-shell"></div>
+
+  <script src="/dashboard/js/api.js"></script>
+  <script src="/dashboard/js/shell.js"></script>
+  <script src="/dashboard/js/overview.js"></script>
+  <script>
+    initShell({ title: 'Overview', subtitle: 'Gateway status and account health at a glance', active: 'overview' });
+    initOverviewPage();
+  </script>
+</body>
+</html>

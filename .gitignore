@@ -3,6 +3,9 @@
 .env.local
 .env.*.local
 
+# Dashboard-managed data (contains raw API keys - never commit)
+data/
+
 # Python
 __pycache__/
 *.py[cod]

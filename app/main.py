@@ -3,17 +3,22 @@
 import asyncio
 import logging
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
+from fastapi.staticfiles import StaticFiles
 
 from app.config import settings
-from app.account_manager import initialize_pool, get_account_pool
+from app import dashboard_api, key_store, runtime_config
+from app.account_manager import get_account_pool, initialize_pool_from_records
 from app.health import health_monitor_loop
 from app.logging_config import setup_logging
 from app.proxy import proxy_request
 
 logger = logging.getLogger(__name__)
+
+STATIC_DIR = Path(__file__).resolve().parent.parent / "static"
 
 
 @asynccontextmanager
@@ -22,12 +27,15 @@ async def lifespan(app: FastAPI):
     setup_logging(settings.log_level)
     logger.info("Starting Ollama Cloud API Gateway v1.0.0")
 
-    api_keys = settings.api_keys_list
-    if not api_keys:
-        logger.error("No Ollama API keys configured! Set OLLAMA_API_KEYS in .env")
-        raise RuntimeError("No Ollama API keys configured")
+    await runtime_config.load_overrides_into_settings()
 
-    initialize_pool(api_keys)
+    records = await key_store.load_keys()
+    if not records:
+        logger.warning(
+            "No Ollama API keys configured yet. Add one from the dashboard at /dashboard, "
+            "or set OLLAMA_API_KEYS in .env."
+        )
+    initialize_pool_from_records(records)
 
     health_task = asyncio.create_task(health_monitor_loop())
 
@@ -47,6 +55,8 @@ app = FastAPI(
     version="1.0.0",
     lifespan=lifespan,
 )
+
+app.include_router(dashboard_api.router)
 
 
 @app.get("/health")
@@ -125,7 +135,12 @@ async def root():
         "name": "Ollama Cloud API Failover Gateway",
         "version": "1.0.0",
         "docs": "/docs",
+        "dashboard": "/dashboard",
         "health": "/health",
         "status": "/status",
         "openai_compatible": "/v1",
     }
+
+
+if STATIC_DIR.is_dir():
+    app.mount("/dashboard", StaticFiles(directory=str(STATIC_DIR), html=True), name="dashboard")

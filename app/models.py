@@ -22,6 +22,9 @@ class AccountStatus(BaseModel):
     """Status information for a single Ollama Cloud account."""
 
     index: int = Field(..., description="Account index in the pool")
+    key_id: Optional[str] = None
+    label: str = ""
+    key_preview: Optional[str] = None
     state: AccountState = Field(default=AccountState.UNKNOWN)
     last_error: Optional[str] = None
     last_used: Optional[datetime] = None
@@ -31,6 +34,9 @@ class AccountStatus(BaseModel):
     cooldown_until: Optional[datetime] = None
     rate_limit_reset: Optional[datetime] = None
     consecutive_failures: int = 0
+    total_prompt_tokens: int = 0
+    total_completion_tokens: int = 0
+    total_tokens: int = 0
 
     model_config = ConfigDict(
         json_encoders={datetime: lambda v: v.isoformat() if v else None}

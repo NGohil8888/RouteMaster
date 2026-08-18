@@ -4,10 +4,14 @@ import asyncio
 import logging
 import time
 from datetime import datetime, timedelta
-from typing import Dict, List, Optional, Tuple
+from typing import TYPE_CHECKING, Dict, List, Optional, Tuple
 
 from app.config import settings
 from app.models import AccountState, AccountStatus
+from app.utils import mask_key
+
+if TYPE_CHECKING:
+    from app.key_store import KeyRecord
 
 logger = logging.getLogger(__name__)
 
@@ -15,10 +19,18 @@ logger = logging.getLogger(__name__)
 class Account:
     """Represents a single Ollama Cloud API account."""
 
-    def __init__(self, index: int, api_key: str):
+    def __init__(self, index: int, api_key: str, key_id: str = "", label: str = ""):
         self.index = index
         self.api_key = api_key
-        self.status = AccountStatus(index=index, state=AccountState.UNKNOWN)
+        self.key_id = key_id
+        self.label = label or f"Account {index + 1}"
+        self.status = AccountStatus(
+            index=index,
+            key_id=key_id or None,
+            label=self.label,
+            key_preview=mask_key(api_key),
+            state=AccountState.UNKNOWN,
+        )
         self._lock = asyncio.Lock()
         self._in_flight = 0
 
@@ -100,6 +112,13 @@ class Account:
         async with self._lock:
             self._in_flight = max(0, self._in_flight - 1)
 
+    async def record_usage(self, prompt_tokens: int, completion_tokens: int, total_tokens: int):
+        """Accumulate token usage from a successful response's `usage` field."""
+        async with self._lock:
+            self.status.total_prompt_tokens += max(0, prompt_tokens)
+            self.status.total_completion_tokens += max(0, completion_tokens)
+            self.status.total_tokens += max(0, total_tokens)
+
 
 class AccountPool:
     """Manages a pool of Ollama Cloud API accounts with failover logic."""
@@ -108,12 +127,54 @@ class AccountPool:
         self.accounts: List[Account] = [
             Account(index=i, api_key=key) for i, key in enumerate(api_keys)
         ]
+        self._init_common()
+
+    def _init_common(self):
         self._round_robin_index = 0
         self._lock = asyncio.Lock()
         self._total_requests = 0
         self._successful_requests = 0
         self._failed_requests = 0
         self._start_time = time.time()
+
+    @classmethod
+    def from_records(cls, records: List["KeyRecord"]) -> "AccountPool":
+        """Build a pool from dashboard-managed KeyRecords (keeps id/label)."""
+        pool = cls.__new__(cls)
+        pool.accounts = [
+            Account(index=i, api_key=r.api_key, key_id=r.id, label=r.label)
+            for i, r in enumerate(records)
+        ]
+        pool._init_common()
+        return pool
+
+    async def sync_from_records(self, records: List["KeyRecord"]) -> None:
+        """Reconcile the live pool with an updated key list, in place.
+
+        Existing accounts (matched by key_id) keep their stats/state; new
+        keys get a fresh Account; removed keys are dropped. This lets the
+        dashboard add/edit/remove keys without restarting the gateway or
+        losing in-memory stats for keys that didn't change.
+        """
+        async with self._lock:
+            existing_by_id = {a.key_id: a for a in self.accounts if a.key_id}
+            new_accounts: List[Account] = []
+            for i, rec in enumerate(records):
+                existing = existing_by_id.get(rec.id)
+                if existing is not None:
+                    existing.api_key = rec.api_key
+                    existing.label = rec.label
+                    existing.index = i
+                    existing.status.index = i
+                    existing.status.label = rec.label
+                    existing.status.key_preview = mask_key(rec.api_key)
+                    new_accounts.append(existing)
+                else:
+                    new_accounts.append(
+                        Account(index=i, api_key=rec.api_key, key_id=rec.id, label=rec.label)
+                    )
+            self.accounts = new_accounts
+            self._round_robin_index = 0
 
     @property
     def total_accounts(self) -> int:
@@ -181,6 +242,14 @@ class AccountPool:
         await account.mark_failure(error, state, cooldown_seconds)
         self._failed_requests += 1
 
+    async def record_usage(self, account: Account, usage: Dict) -> None:
+        """Record token usage from a successful response's `usage` field."""
+        await account.record_usage(
+            usage.get("prompt_tokens", 0) or 0,
+            usage.get("completion_tokens", 0) or 0,
+            usage.get("total_tokens", 0) or 0,
+        )
+
     def get_all_statuses(self) -> List[AccountStatus]:
         """Get the status of all accounts."""
         return [acc.status for acc in self.accounts]
@@ -220,10 +289,18 @@ account_pool: Optional[AccountPool] = None
 
 
 def initialize_pool(api_keys: List[str]) -> AccountPool:
-    """Initialize the global account pool."""
+    """Initialize the global account pool from a plain list of key strings."""
     global account_pool
     account_pool = AccountPool(api_keys)
     logger.info(f"Initialized account pool with {len(api_keys)} account(s)")
+    return account_pool
+
+
+def initialize_pool_from_records(records: List["KeyRecord"]) -> AccountPool:
+    """Initialize the global account pool from dashboard-managed KeyRecords."""
+    global account_pool
+    account_pool = AccountPool.from_records(records)
+    logger.info(f"Initialized account pool with {len(records)} account(s) from key store")
     return account_pool
 
 

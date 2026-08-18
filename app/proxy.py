@@ -45,13 +45,6 @@ def _is_streaming_request(body: bytes) -> bool:
         return False
 
 
-def _mask_key(key: str) -> str:
-    """Mask an API key for safe logging."""
-    if len(key) <= 8:
-        return "***"
-    return key[:4] + "..." + key[-4:]
-
-
 def _extract_cooldown_from_headers(headers: Dict[str, str]) -> Optional[float]:
     """Extract cooldown duration from rate limit headers."""
     # Check common rate limit headers
@@ -212,6 +205,12 @@ async def proxy_request(
                     )
                 else:
                     content = await response.aread()
+                    try:
+                        usage = json.loads(content).get("usage")
+                        if usage:
+                            await account_pool.record_usage(acct, usage)
+                    except (json.JSONDecodeError, UnicodeDecodeError, AttributeError):
+                        pass
                     return Response(
                         content=content,
                         status_code=response.status_code,

@@ -15,6 +15,18 @@ A production-ready, OpenAI-compatible local API gateway that sits between your A
 - Supports streaming responses (`stream: true`)
 - Background health checks automatically recover failed accounts
 - Never exposes your API keys to downstream clients
+- Includes a web dashboard (`/dashboard`) for managing accounts without editing `.env` or restarting the gateway
+
+## Web Dashboard
+
+Once the gateway is running, open **`http://localhost:8000/dashboard`** in your browser. It has four pages:
+
+- **Overview** — live account health, request counts, and total token usage
+- **API Keys** — add, edit, remove, and live-test individual Ollama Cloud API keys. Changes apply immediately, no restart needed
+- **Usage** — per-account token usage breakdown (prompt/completion/total)
+- **Settings** — edit retry counts, timeouts, and cooldowns at runtime; changes are persisted and applied live
+
+On first startup, any keys already in `OLLAMA_API_KEYS` in your `.env` are automatically migrated into the dashboard's own storage (`data/keys.json`). After that, the dashboard is the source of truth — `.env` is only used to bootstrap a brand-new install. **`data/` contains your raw API keys in plaintext and is gitignored — never commit it.** If running via Docker, `data/` is mounted as a volume so it survives container rebuilds.
 
 ## Requirements
 
@@ -80,8 +92,13 @@ No client-side API key is required — the gateway injects one of your configure
 | Endpoint | Description |
 |---|---|
 | `GET /` | Basic gateway info |
+| `GET /dashboard` | Web dashboard for managing keys, usage, and settings |
 | `GET /health` | Liveness/readiness check, used by Docker's healthcheck |
 | `GET /status` | Detailed per-account status (requests, failures, cooldowns) |
+| `GET/POST/PUT/DELETE /api/keys` | Dashboard's key management API |
+| `POST /api/keys/{id}/test` | Live-test a specific key against Ollama Cloud |
+| `GET /api/usage` | Token usage per account |
+| `GET/PUT /api/settings` | Runtime-editable gateway settings |
 | `/v1/*` | Proxied to Ollama Cloud's OpenAI-compatible API, with failover |
 
 ## Configuration
@@ -126,10 +143,3 @@ tests/
 run.py                  Entry point
 Dockerfile / docker-compose.yml
 ```
-
-To test 
-
-Invoke-RestMethod -Uri "http://localhost:8000/v1/models" -Method GET
-
-
-Invoke-RestMethod -Uri "http://localhost:8000/v1/chat/completions" -Method POST -ContentType "application/json" -Body '{"model": "minimax-m3:cloud", "messages": [{"role": "user", "content": "Hello!"}]}'
