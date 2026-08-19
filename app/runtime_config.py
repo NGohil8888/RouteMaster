@@ -31,6 +31,16 @@ EDITABLE_FIELDS = {
 }
 
 
+# String-typed fields live separately from the numeric EDITABLE_FIELDS dict -
+# they need a length cap instead of min/max, and no numeric coercion. The
+# dashboard exposes these through the same /api/settings endpoint, but with
+# different validation rules.
+EDITABLE_STRING_FIELDS = {
+    # (min_length, max_length)
+    "gateway_admin_token": (8, 256),
+}
+
+
 class SettingsValidationError(ValueError):
     """Raised when a runtime settings update is out of bounds."""
 
@@ -45,6 +55,22 @@ def _validate(key: str, value: Any) -> Any:
     return casted
 
 
+def _validate_string(key: str, value: Any) -> str:
+    if value is None:
+        return ""
+    text = str(value).strip()
+    low, high = EDITABLE_STRING_FIELDS[key]
+    if len(text) < low:
+        raise SettingsValidationError(
+            f"{key} must be at least {low} characters, got {len(text)}"
+        )
+    if len(text) > high:
+        raise SettingsValidationError(
+            f"{key} must be at most {high} characters, got {len(text)}"
+        )
+    return text
+
+
 async def load_overrides_into_settings() -> None:
     """Apply any persisted overrides onto the settings singleton at startup.
 
@@ -53,26 +79,40 @@ async def load_overrides_into_settings() -> None:
     """
     overrides = await store.read_json(SETTINGS_FILE, default={}) or {}
     for key, raw in overrides.items():
-        if key not in EDITABLE_FIELDS:
-            continue
-        try:
-            setattr(settings, key, _validate(key, raw))
-        except (ValueError, TypeError, SettingsValidationError):
-            # Bad persisted value - skip and let the env/default take over.
-            continue
+        if key in EDITABLE_FIELDS:
+            try:
+                setattr(settings, key, _validate(key, raw))
+            except (ValueError, TypeError, SettingsValidationError):
+                continue
+        elif key in EDITABLE_STRING_FIELDS:
+            try:
+                setattr(settings, key, _validate_string(key, raw))
+            except (ValueError, TypeError, SettingsValidationError):
+                continue
 
 
 async def get_editable_settings() -> Dict[str, Any]:
-    return {field: getattr(settings, field) for field in EDITABLE_FIELDS}
+    out: Dict[str, Any] = {field: getattr(settings, field) for field in EDITABLE_FIELDS}
+    # String fields are sensitive - return whether a token is *set* but never
+    # the value itself, so /api/settings never leaks it to the dashboard.
+    for field in EDITABLE_STRING_FIELDS:
+        current = getattr(settings, field, None)
+        out[field] = bool(current)
+    return out
 
 
 async def update_settings(updates: Dict[str, Any]) -> Dict[str, Any]:
     current = await store.read_json(SETTINGS_FILE, default={}) or {}
     for key, value in updates.items():
-        if key not in EDITABLE_FIELDS:
-            continue
-        casted = _validate(key, value)
-        setattr(settings, key, casted)
-        current[key] = casted
+        if key in EDITABLE_FIELDS:
+            casted = _validate(key, value)
+            setattr(settings, key, casted)
+            current[key] = casted
+        elif key in EDITABLE_STRING_FIELDS:
+            casted = _validate_string(key, value)
+            setattr(settings, key, casted or None)
+            # Persist as empty string when cleared so the file structure is
+            # stable; load_overrides_into_settings will normalize to None.
+            current[key] = casted
     await store.write_json(SETTINGS_FILE, current)
     return await get_editable_settings()

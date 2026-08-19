@@ -1,7 +1,7 @@
 """Configuration management for the Ollama Cloud API Gateway."""
 
 import os
-from typing import List
+from typing import List, Optional
 
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -40,6 +40,12 @@ class Settings(BaseSettings):
     # Request settings
     stream_timeout_seconds: float = Field(default=300.0, alias="STREAM_TIMEOUT_SECONDS")
     max_concurrent_requests_per_account: int = Field(default=10, alias="MAX_CONCURRENT_REQUESTS_PER_ACCOUNT")
+
+    # Optional admin token for the dashboard API. When unset (the default),
+    # /api/* stays open as before - matches the single-user local-tool mode
+    # the project has shipped with. Setting GATEWAY_ADMIN_TOKEN locks every
+    # /api/* endpoint behind Bearer auth.
+    gateway_admin_token: Optional[str] = Field(default=None, alias="GATEWAY_ADMIN_TOKEN")
 
     @property
     def api_keys_list(self) -> List[str]:

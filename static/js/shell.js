@@ -52,8 +52,82 @@ function initShell({ title, subtitle, active }) {
   root.innerHTML = shellHtml(active);
   document.getElementById('shell-title').textContent = title;
   document.getElementById('shell-subtitle').textContent = subtitle || '';
+  installAuthGate();
   refreshShellStatus();
   setInterval(refreshShellStatus, 8000);
+}
+
+// --- admin token gate ------------------------------------------------------
+// If the server has GATEWAY_ADMIN_TOKEN set, the dashboard shows an unlock
+// overlay until the user enters the token. The token is stored in
+// sessionStorage (cleared on tab close) and attached to every subsequent
+// /api/* request via X-Gateway-Token.
+
+let authOverlayInstalled = false;
+
+function installAuthGate() {
+  if (authOverlayInstalled) return;
+  authOverlayInstalled = true;
+
+  const overlay = document.createElement('div');
+  overlay.className = 'auth-overlay hidden';
+  overlay.id = 'auth-overlay';
+  overlay.innerHTML = `
+    <div class="auth-modal">
+      <div class="auth-modal-title">Admin token required</div>
+      <div class="auth-modal-desc">This RouteMaster gateway is locked. Enter the admin token configured via GATEWAY_ADMIN_TOKEN or the Settings page.</div>
+      <div class="field">
+        <input id="auth-token-input" type="password" autocomplete="off" placeholder="Admin token" />
+      </div>
+      <div class="auth-modal-error" id="auth-modal-error"></div>
+      <div class="auth-modal-actions">
+        <button class="btn btn-primary btn-sm" id="auth-token-submit">Unlock</button>
+      </div>
+    </div>`;
+  document.body.appendChild(overlay);
+
+  const submit = () => {
+    const input = document.getElementById('auth-token-input');
+    const token = input.value.trim();
+    if (!token) return;
+    setAdminToken(token);
+    // Verify by hitting a cheap endpoint. On success, hide overlay and
+    // refresh the page content; on failure, clear the token and show error.
+    API.authStatus()
+      .then((st) => {
+        if (st.ok) {
+          overlay.classList.add('hidden');
+          document.getElementById('auth-modal-error').textContent = '';
+          window.location.reload();
+        } else {
+          setAdminToken('');
+          document.getElementById('auth-modal-error').textContent = 'Wrong token.';
+        }
+      })
+      .catch(() => {
+        setAdminToken('');
+        document.getElementById('auth-modal-error').textContent = 'Could not reach the gateway.';
+      });
+  };
+
+  document.getElementById('auth-token-submit').addEventListener('click', submit);
+  document.getElementById('auth-token-input').addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') submit();
+  });
+}
+
+async function checkAuthBeforeApiCalls() {
+  try {
+    const st = await API.authStatus();
+    if (st.required && !st.ok) {
+      const overlay = document.getElementById('auth-overlay');
+      if (overlay) overlay.classList.remove('hidden');
+      return false;
+    }
+  } catch (e) {
+    /* gateway unreachable - page-level error handlers will surface it */
+  }
+  return true;
 }
 
 async function refreshShellStatus() {
@@ -77,6 +151,13 @@ async function refreshShellStatus() {
       text.textContent = `${healthy}/${total} healthy`;
     }
   } catch (e) {
+    if (e && e.code === 'AUTH_REQUIRED') {
+      // The unlock overlay is already showing - don't compete with it
+      // for the status pill.
+      dot.className = 'pulse-dot warn';
+      text.textContent = 'locked - enter admin token';
+      return;
+    }
     dot.className = 'pulse-dot down';
     text.textContent = 'gateway unreachable';
   }

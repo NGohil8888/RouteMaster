@@ -489,3 +489,88 @@ class TestImprovements:
             assert updated["max_retries"] == 5
         finally:
             store.DATA_DIR = original
+
+    @pytest.mark.asyncio
+    async def test_admin_token_open_when_unset(self, client):
+        # Without GATEWAY_ADMIN_TOKEN set, /api/* is open as before.
+        resp = client.get("/api/overview")
+        assert resp.status_code == 200
+        resp = client.get("/api/auth/status")
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["required"] is False
+        assert body["ok"] is False
+
+    @pytest.mark.asyncio
+    async def test_admin_token_locks_when_set(self):
+        """Setting GATEWAY_ADMIN_TOKEN makes /api/* reject unsigned requests."""
+        from fastapi.testclient import TestClient
+        from app.config import settings
+        from app.main import app
+
+        original = settings.gateway_admin_token
+        settings.gateway_admin_token = "supersecrettoken"
+        try:
+            # Use a fresh client so the test sees the live settings value.
+            test_client = TestClient(app)
+            # No token -> 401
+            resp = test_client.get("/api/overview")
+            assert resp.status_code == 401
+            resp = test_client.get("/api/auth/status")
+            assert resp.status_code == 200
+            assert resp.json()["required"] is True
+            assert resp.json()["ok"] is False
+
+            # Wrong token -> 401, never echoed back in body
+            resp = test_client.get(
+                "/api/overview", headers={"X-Gateway-Token": "wrong"}
+            )
+            assert resp.status_code == 401
+
+            # Right token via X-Gateway-Token -> 200
+            resp = test_client.get(
+                "/api/overview",
+                headers={"X-Gateway-Token": "supersecrettoken"},
+            )
+            assert resp.status_code == 200
+
+            # Right token via Authorization: Bearer -> 200
+            resp = test_client.get(
+                "/api/overview",
+                headers={"Authorization": "Bearer supersecrettoken"},
+            )
+            assert resp.status_code == 200
+
+            # /health and / stay open even when the token is set (these
+            # don't read user-config; the proxy needs them unlocked for
+            # Docker's healthcheck and OpenAI-compatible clients).
+            assert test_client.get("/health").status_code == 200
+            assert test_client.get("/").status_code == 200
+        finally:
+            settings.gateway_admin_token = original
+
+    @pytest.mark.asyncio
+    async def test_settings_string_token_round_trip(self, tmp_path):
+        import app.store as store
+        from app import runtime_config
+
+        original_dir = store.DATA_DIR
+        original_token = settings.gateway_admin_token
+        store.DATA_DIR = tmp_path / "data"
+        store.DATA_DIR.mkdir()
+        try:
+            settings.gateway_admin_token = None
+            updated = await runtime_config.update_settings(
+                {"gateway_admin_token": "new-admin-token-12345"}
+            )
+            # The token isn't echoed back, only a boolean indicating it's set.
+            assert updated["gateway_admin_token"] is True
+            # ... and the live settings object has the real value.
+            assert settings.gateway_admin_token == "new-admin-token-12345"
+
+            # Clear by sending empty string.
+            await runtime_config.update_settings({"gateway_admin_token": ""})
+            assert settings.gateway_admin_token is None
+        finally:
+            settings.gateway_admin_token = original_token
+            store.DATA_DIR = original_dir

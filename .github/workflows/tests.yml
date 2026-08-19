@@ -2,9 +2,9 @@ name: Tests
 
 on:
   push:
-    branches: [main]
+    branches: [master, main]
   pull_request:
-    branches: [main]
+    branches: [master, main]
 
 jobs:
   test:
@@ -13,8 +13,13 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
+          python-version: "3.12"
       - name: Install dependencies
         run: pip install -r requirements-dev.txt
       - name: Run tests
-        run: pytest tests/ -v
+        env:
+          # CI never has real Ollama Cloud creds. The dashboard's load_keys()
+          # bootstraps from this list on first run, so any non-empty value
+          # suffices to make tests pass.
+          OLLAMA_API_KEYS: "ci_key_1,ci_key_2,ci_key_3"
+        run: pytest tests/ -v --tb=short

@@ -3,6 +3,12 @@
 const API = {
   async _req(method, path, body) {
     const opts = { method, headers: {} };
+    const token = getAdminToken();
+    if (token) {
+      // X-Gateway-Token avoids a CORS preflight that Authorization: Bearer
+      // would otherwise require in browser contexts.
+      opts.headers['X-Gateway-Token'] = token;
+    }
     if (body !== undefined) {
       opts.headers['Content-Type'] = 'application/json';
       opts.body = JSON.stringify(body);
@@ -13,6 +19,13 @@ const API = {
       data = await res.json();
     } catch (e) {
       /* no body */
+    }
+    if (res.status === 401) {
+      // Surface a clear "token required / wrong" instead of dropping into
+      // the generic error toast. The page can choose to show the unlock UI.
+      const err = new Error((data && data.detail) || 'Admin token required');
+      err.code = 'AUTH_REQUIRED';
+      throw err;
     }
     if (!res.ok) {
       const msg = (data && (data.detail || (data.error && data.error.message))) || `HTTP ${res.status}`;
@@ -34,7 +47,21 @@ const API = {
   usage() { return this.get('/api/usage'); },
   settings() { return this.get('/api/settings'); },
   updateSettings(patch) { return this.put('/api/settings', patch); },
+  authStatus() { return this.get('/api/auth/status'); },
 };
+
+// Admin token handling. The token is persisted to sessionStorage - cleared
+// the moment the browser tab closes, which is the right scope for a shared
+// machine where multiple people might use the dashboard.
+function getAdminToken() {
+  try { return sessionStorage.getItem('rm_admin_token') || ''; } catch (e) { return ''; }
+}
+function setAdminToken(token) {
+  try {
+    if (token) sessionStorage.setItem('rm_admin_token', token);
+    else sessionStorage.removeItem('rm_admin_token');
+  } catch (e) { /* sessionStorage may be unavailable */ }
+}
 
 function fmtNumber(n) {
   if (n === null || n === undefined) return '—';
