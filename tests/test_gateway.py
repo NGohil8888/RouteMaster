@@ -511,41 +511,44 @@ class TestImprovements:
         original = settings.gateway_admin_token
         settings.gateway_admin_token = "supersecrettoken"
         try:
-            # Use a fresh client so the test sees the live settings value.
-            test_client = TestClient(app)
-            # No token -> 401
-            resp = test_client.get("/api/overview")
-            assert resp.status_code == 401
-            resp = test_client.get("/api/auth/status")
-            assert resp.status_code == 200
-            assert resp.json()["required"] is True
-            assert resp.json()["ok"] is False
+            # Must use TestClient as a context manager to trigger FastAPI's
+            # startup lifespan (which initializes the account pool) - without
+            # it, /health correctly reports 503 "not initialized" regardless
+            # of the admin token, which isn't what this test is checking.
+            with TestClient(app) as test_client:
+                # No token -> 401
+                resp = test_client.get("/api/overview")
+                assert resp.status_code == 401
+                resp = test_client.get("/api/auth/status")
+                assert resp.status_code == 200
+                assert resp.json()["required"] is True
+                assert resp.json()["ok"] is False
 
-            # Wrong token -> 401, never echoed back in body
-            resp = test_client.get(
-                "/api/overview", headers={"X-Gateway-Token": "wrong"}
-            )
-            assert resp.status_code == 401
+                # Wrong token -> 401, never echoed back in body
+                resp = test_client.get(
+                    "/api/overview", headers={"X-Gateway-Token": "wrong"}
+                )
+                assert resp.status_code == 401
 
-            # Right token via X-Gateway-Token -> 200
-            resp = test_client.get(
-                "/api/overview",
-                headers={"X-Gateway-Token": "supersecrettoken"},
-            )
-            assert resp.status_code == 200
+                # Right token via X-Gateway-Token -> 200
+                resp = test_client.get(
+                    "/api/overview",
+                    headers={"X-Gateway-Token": "supersecrettoken"},
+                )
+                assert resp.status_code == 200
 
-            # Right token via Authorization: Bearer -> 200
-            resp = test_client.get(
-                "/api/overview",
-                headers={"Authorization": "Bearer supersecrettoken"},
-            )
-            assert resp.status_code == 200
+                # Right token via Authorization: Bearer -> 200
+                resp = test_client.get(
+                    "/api/overview",
+                    headers={"Authorization": "Bearer supersecrettoken"},
+                )
+                assert resp.status_code == 200
 
-            # /health and / stay open even when the token is set (these
-            # don't read user-config; the proxy needs them unlocked for
-            # Docker's healthcheck and OpenAI-compatible clients).
-            assert test_client.get("/health").status_code == 200
-            assert test_client.get("/").status_code == 200
+                # /health and / stay open even when the token is set (these
+                # don't read user-config; the proxy needs them unlocked for
+                # Docker's healthcheck and OpenAI-compatible clients).
+                assert test_client.get("/health").status_code == 200
+                assert test_client.get("/").status_code == 200
         finally:
             settings.gateway_admin_token = original
 

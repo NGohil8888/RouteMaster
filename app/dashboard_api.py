@@ -4,6 +4,7 @@ usage stats, and runtime settings. Mounted under /api by main.py.
 
 import hmac
 import logging
+import time
 from typing import Any, Dict, Optional
 
 import httpx
@@ -86,9 +87,12 @@ class SettingsIn(BaseModel):
     request_timeout_seconds: Optional[float] = Field(default=None, ge=1.0, le=3600.0)
     stream_timeout_seconds: Optional[float] = Field(default=None, ge=1.0, le=86400.0)
     max_concurrent_requests_per_account: Optional[int] = Field(default=None, ge=1, le=10000)
-    # String-typed fields. `gateway_admin_token` accepts None (clear) or a
-    # string of length 8-256. Empty strings clear the token.
-    gateway_admin_token: Optional[str] = Field(default=None, min_length=8, max_length=256)
+    # String-typed fields. `gateway_admin_token` accepts None (leave unchanged),
+    # an empty string (explicit clear), or a string of length 8-256. The
+    # 8-char minimum for a *non-empty* token is enforced in runtime_config,
+    # not here - a Field(min_length=8) would reject the empty-string clear
+    # signal with a 422 before the request body could ever reach that logic.
+    gateway_admin_token: Optional[str] = Field(default=None, max_length=256)
 
 
 async def _resync_pool():

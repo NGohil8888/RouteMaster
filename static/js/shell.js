@@ -53,6 +53,7 @@ function initShell({ title, subtitle, active }) {
   document.getElementById('shell-title').textContent = title;
   document.getElementById('shell-subtitle').textContent = subtitle || '';
   installAuthGate();
+  checkAuthBeforeApiCalls();
   refreshShellStatus();
   setInterval(refreshShellStatus, 8000);
 }

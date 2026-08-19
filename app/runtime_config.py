@@ -59,6 +59,9 @@ def _validate_string(key: str, value: Any) -> str:
     if value is None:
         return ""
     text = str(value).strip()
+    if text == "":
+        # Explicit clear signal - skip the minimum-length check entirely.
+        return ""
     low, high = EDITABLE_STRING_FIELDS[key]
     if len(text) < low:
         raise SettingsValidationError(
