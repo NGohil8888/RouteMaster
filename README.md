@@ -31,31 +31,34 @@ pip install -r requirements.txt
 uvicorn main:app --host 0.0.0.0 --port 8000 --reload
 ```
 
-On first run, if you haven't set any API keys, the gateway auto-generates
-one and prints it to the console, saving it into `keys.json`:
+On first run, if no `.env` file exists yet (or `GATEWAY_API_KEYS` is
+blank), the gateway auto-generates a key and writes it into `.env`:
 
 ```
-No API keys found. Generated a new one and saved it to keys.json:
+No API keys found. Generated a new one and saved it to .env:
   8f3a1c9e...
 Use it as: Authorization: Bearer <that key>
 ```
 
-Keep `keys.json` private (it's already in `.gitignore`).
+`.env` is already in `.gitignore` — never commit it.
 
 ### Adding your own keys
 
-Either edit `keys.json` directly:
-
-```json
-{ "keys": ["my-app-key-1", "my-other-app-key-2"] }
-```
-
-or set an environment variable before starting the server:
+Copy `.env.example` to `.env`:
 
 ```bash
-export GATEWAY_API_KEYS="key-for-app-1,key-for-app-2"
-uvicorn main:app --host 0.0.0.0 --port 8000
+cp .env.example .env
 ```
+
+Then edit `.env` and set one or more keys (comma-separated for multiple
+apps/projects):
+
+```
+GATEWAY_API_KEYS=key-for-app-1,key-for-app-2
+OLLAMA_BASE_URL=http://localhost:11434
+```
+
+Restart the server after editing `.env` for changes to take effect.
 
 Different keys let you tell which app/project is calling if you later
 add logging or rate limits — right now all valid keys have equal access.

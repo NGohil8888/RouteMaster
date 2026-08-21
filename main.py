@@ -16,11 +16,12 @@ Then call it like:
 """
 
 import os
-import json
 import secrets
+from pathlib import Path
 from typing import Optional
 
 import httpx
+from dotenv import load_dotenv, set_key
 from fastapi import FastAPI, Header, HTTPException, Request
 from fastapi.responses import StreamingResponse, JSONResponse
 from pydantic import BaseModel
@@ -29,36 +30,32 @@ from pydantic import BaseModel
 # Config
 # ---------------------------------------------------------------------------
 
+ENV_PATH = Path(__file__).parent / ".env"
+load_dotenv(ENV_PATH)
+
 OLLAMA_BASE_URL = os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434")
 
-# Load allowed API keys from env var (comma-separated) or a keys.json file.
-# You control who/what can call your gateway via these keys.
+# Load allowed API keys from the GATEWAY_API_KEYS variable in .env
+# (comma-separated if you have more than one, e.g. one key per app/project).
 def load_api_keys() -> set[str]:
-    keys = set()
-
-    env_keys = os.environ.get("GATEWAY_API_KEYS", "")
-    if env_keys:
-        keys.update(k.strip() for k in env_keys.split(",") if k.strip())
-
-    keys_file = os.path.join(os.path.dirname(__file__), "keys.json")
-    if os.path.exists(keys_file):
-        with open(keys_file) as f:
-            data = json.load(f)
-            keys.update(data.get("keys", []))
-
-    return keys
+    raw = os.environ.get("GATEWAY_API_KEYS", "")
+    return {k.strip() for k in raw.split(",") if k.strip()}
 
 
 API_KEYS = load_api_keys()
 
 if not API_KEYS:
-    # Auto-generate one key on first run so the gateway is never wide open.
+    # Auto-generate one key on first run so the gateway is never wide open,
+    # and write it into .env so it persists across restarts.
     generated = secrets.token_urlsafe(32)
     API_KEYS = {generated}
-    with open(os.path.join(os.path.dirname(__file__), "keys.json"), "w") as f:
-        json.dump({"keys": [generated]}, f, indent=2)
+
+    if not ENV_PATH.exists():
+        ENV_PATH.touch()
+    set_key(str(ENV_PATH), "GATEWAY_API_KEYS", generated)
+
     print("=" * 70)
-    print("No API keys found. Generated a new one and saved it to keys.json:")
+    print("No API keys found. Generated a new one and saved it to .env:")
     print(f"  {generated}")
     print("Use it as: Authorization: Bearer <that key>")
     print("=" * 70)
