@@ -1,145 +1,163 @@
-# Ollama Cloud API Failover Gateway
+# Ollama Gateway
 
-A production-ready, OpenAI-compatible local API gateway that sits between your AI agents and multiple Ollama Cloud API accounts. It provides **automatic failover**, **health monitoring**, **rate-limit handling**, and **streaming support** so that multiple Ollama Cloud accounts behave like one reliable API service.
+A small self-hosted API gateway that sits in front of your local Ollama
+server. It adds:
 
-## What This Project Does
+- **API-key auth** — no more wide-open `localhost:11434` to every app on
+  your machine.
+- **Stable endpoints** (`/v1/chat`, `/v1/generate`, `/v1/models`,
+  `/v1/health`) you can point any project at, regardless of which model
+  or Ollama version is running underneath.
+- **Streaming support** for both chat and generate.
 
-- Exposes a single local OpenAI-compatible endpoint at `http://localhost:8000/v1`
-- Forwards requests to multiple Ollama Cloud API accounts
-- Automatically fails over when an account is:
-  - Temporarily unavailable
-  - Rate limited (HTTP 429)
-  - Returning server errors (HTTP 500/502/503/504)
-  - Timing out
-  - Has an invalid/expired API key
-- Supports streaming responses (`stream: true`)
-- Background health checks automatically recover failed accounts
-- Never exposes your API keys to downstream clients
-- Includes a web dashboard (`/dashboard`) for managing accounts without editing `.env` or restarting the gateway
+## 1. Prerequisites
 
-## Web Dashboard
-
-Once the gateway is running, open **`http://localhost:8000/dashboard`** in your browser. It has four pages:
-
-- **Overview** — live account health, request counts, and total token usage
-- **API Keys** — add, edit, remove, and live-test individual Ollama Cloud API keys. Changes apply immediately, no restart needed
-- **Usage** — per-account token usage breakdown (prompt/completion/total)
-- **Settings** — edit retry counts, timeouts, and cooldowns at runtime; changes are persisted and applied live
-
-On first startup, any keys already in `OLLAMA_API_KEYS` in your `.env` are automatically migrated into the dashboard's own storage (`data/keys.json`). After that, the dashboard is the source of truth — `.env` is only used to bootstrap a brand-new install. **`data/` contains your raw API keys in plaintext and is gitignored — never commit it.** If running via Docker, `data/` is mounted as a volume so it survives container rebuilds.
-
-## Requirements
-
+- Ollama installed and running (`ollama serve`, default port `11434`).
+  At least one model pulled, e.g. `ollama pull llama3.2`.
 - Python 3.10+
-- pip
-- (Optional) Docker & Docker Compose
 
-## Installation
-
-### Without Docker
-
-1. Clone the repo and `cd` into it.
-2. Create a virtual environment and install dependencies:
-   ```bash
-   python -m venv venv
-   source venv/bin/activate      # on Windows: venv\Scripts\activate
-   pip install -r requirements.txt
-   ```
-3. Copy the example env file and fill in your Ollama Cloud API keys:
-   ```bash
-   cp .env.example .env
-   # edit .env and set OLLAMA_API_KEYS=key1,key2,key3
-   ```
-4. Run the gateway:
-   ```bash
-   python run.py
-   ```
-   The gateway will be available at `http://localhost:8000`.
-
-### With Docker
-
-1. Copy `.env.example` to `.env` and fill in your API keys (same as above).
-2. Build and start the container:
-   ```bash
-   docker compose up --build -d
-   ```
-3. Check it's running:
-   ```bash
-   curl http://localhost:8000/health
-   ```
-4. Stop it with:
-   ```bash
-   docker compose down
-   ```
-
-## Usage
-
-Point any OpenAI-compatible client at the gateway instead of Ollama Cloud directly:
+## 2. Setup
 
 ```bash
-curl http://localhost:8000/v1/chat/completions \
+cd ollama-gateway
+python3 -m venv .venv
+source .venv/bin/activate      # Windows: .venv\Scripts\activate
+pip install -r requirements.txt
+```
+
+## 3. Run
+
+```bash
+uvicorn main:app --host 0.0.0.0 --port 8000 --reload
+```
+
+On first run, if you haven't set any API keys, the gateway auto-generates
+one and prints it to the console, saving it into `keys.json`:
+
+```
+No API keys found. Generated a new one and saved it to keys.json:
+  8f3a1c9e...
+Use it as: Authorization: Bearer <that key>
+```
+
+Keep `keys.json` private (it's already in `.gitignore`).
+
+### Adding your own keys
+
+Either edit `keys.json` directly:
+
+```json
+{ "keys": ["my-app-key-1", "my-other-app-key-2"] }
+```
+
+or set an environment variable before starting the server:
+
+```bash
+export GATEWAY_API_KEYS="key-for-app-1,key-for-app-2"
+uvicorn main:app --host 0.0.0.0 --port 8000
+```
+
+Different keys let you tell which app/project is calling if you later
+add logging or rate limits — right now all valid keys have equal access.
+
+## 4. Usage
+
+### Health check (no key needed)
+
+```bash
+curl http://localhost:8000/v1/health
+```
+
+### List installed models
+
+```bash
+curl http://localhost:8000/v1/models \
+  -H "Authorization: Bearer YOUR_API_KEY"
+```
+
+### Chat
+
+```bash
+curl http://localhost:8000/v1/chat \
+  -H "Authorization: Bearer YOUR_API_KEY" \
   -H "Content-Type: application/json" \
   -d '{
-    "model": "gemma3:4b",
-    "messages": [{"role": "user", "content": "Hello!"}]
+    "model": "llama3.2",
+    "messages": [{"role": "user", "content": "Give me a haiku about oceans."}]
   }'
 ```
 
-No client-side API key is required — the gateway injects one of your configured Ollama Cloud keys on your behalf and rotates/retries across accounts automatically.
-
-### Endpoints
-
-| Endpoint | Description |
-|---|---|
-| `GET /` | Basic gateway info |
-| `GET /dashboard` | Web dashboard for managing keys, usage, and settings |
-| `GET /health` | Liveness/readiness check, used by Docker's healthcheck |
-| `GET /status` | Detailed per-account status (requests, failures, cooldowns) |
-| `GET/POST/PUT/DELETE /api/keys` | Dashboard's key management API |
-| `POST /api/keys/{id}/test` | Live-test a specific key against Ollama Cloud |
-| `GET /api/usage` | Token usage per account |
-| `GET/PUT /api/settings` | Runtime-editable gateway settings |
-| `/v1/*` | Proxied to Ollama Cloud's OpenAI-compatible API, with failover |
-
-## Configuration
-
-All configuration is via environment variables (see `.env.example` for the full list and defaults):
-
-| Variable | Default | Description |
-|---|---|---|
-| `OLLAMA_API_KEYS` | *(required)* | Comma-separated list of Ollama Cloud API keys |
-| `OLLAMA_BASE_URL` | `https://ollama.com` | Ollama Cloud base URL |
-| `HOST` / `PORT` | `0.0.0.0` / `8000` | Bind address for the gateway |
-| `MAX_RETRIES` | `3` | Max accounts to try per request before giving up |
-| `REQUEST_TIMEOUT_SECONDS` | `120` | Timeout for non-streaming requests |
-| `STREAM_TIMEOUT_SECONDS` | `300` | Timeout for streaming requests |
-| `ACCOUNT_COOLDOWN_SECONDS` | `60` | Base cooldown after a failure (grows with exponential backoff) |
-| `HEALTH_CHECK_INTERVAL_SECONDS` | `30` | How often the background health monitor checks accounts |
-| `MAX_CONCURRENT_REQUESTS_PER_ACCOUNT` | `10` | Concurrency cap per account |
-
-## Running Tests
+### Generate (single prompt, no chat history)
 
 ```bash
-pip install -r requirements-dev.txt
-pytest tests/ -v
+curl http://localhost:8000/v1/generate \
+  -H "Authorization: Bearer YOUR_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"model": "llama3.2", "prompt": "Explain recursion in one sentence."}'
 ```
 
-## Do You Need Docker?
+### Streaming
 
-Docker is optional. This is a lightweight pure-Python app with no system-level dependencies, so a plain virtualenv works fine for local/single-machine use. Docker mainly buys you automatic restarts (`restart: unless-stopped`) and environment isolation — useful if you're deploying this to a server, but not required for running it on your own machine.
+Set `"stream": true` in the request body. Responses come back as
+newline-delimited JSON (`application/x-ndjson`), one chunk per line —
+the same format Ollama itself uses.
 
-## Project Structure
+## 5. Calling it from code
 
+### Python
+
+```python
+import requests
+
+resp = requests.post(
+    "http://localhost:8000/v1/chat",
+    headers={"Authorization": "Bearer YOUR_API_KEY"},
+    json={
+        "model": "llama3.2",
+        "messages": [{"role": "user", "content": "Hello!"}],
+    },
+)
+print(resp.json())
 ```
-app/
-  main.py              FastAPI app, routes
-  proxy.py             Request forwarding + failover logic
-  account_manager.py   Account pool, state tracking, cooldowns
-  health.py            Background health monitoring
-  config.py            Settings loaded from environment
-  models.py            Pydantic data models
-tests/
-  test_gateway.py       Test suite
-run.py                  Entry point
-Dockerfile / docker-compose.yml
+
+### JavaScript / Node
+
+```javascript
+const resp = await fetch("http://localhost:8000/v1/chat", {
+  method: "POST",
+  headers: {
+    "Authorization": "Bearer YOUR_API_KEY",
+    "Content-Type": "application/json",
+  },
+  body: JSON.stringify({
+    model: "llama3.2",
+    messages: [{ role: "user", content: "Hello!" }],
+  }),
+});
+const data = await resp.json();
+console.log(data);
 ```
+
+## 6. Using it from multiple projects
+
+Since the gateway runs once on `localhost:8000` (or a LAN IP if you set
+`--host 0.0.0.0` and connect from another device on your network), every
+project just needs:
+
+1. The base URL (`http://localhost:8000` or `http://<your-machine-ip>:8000`)
+2. Its API key
+
+No project needs direct knowledge of Ollama, which model versions are
+installed, or where it's hosted — the gateway is the single stable
+interface.
+
+## 7. Notes on security
+
+- This gateway is designed for **local/trusted-network use**. It does not
+  do TLS, rate limiting, or per-key usage tracking out of the box.
+- If you expose it beyond your LAN (e.g. via a tunnel or port forward),
+  put it behind HTTPS (e.g. Caddy, Nginx, or Cloudflare Tunnel) and treat
+  your API keys like real secrets.
+- Anyone with a valid key currently has equal access — there's no
+  per-key permission scoping. That's easy to add later in `check_api_key`
+  if you need it.
