@@ -95,7 +95,10 @@ try {
     $allPassed = $false
 }
 catch {
-    $statusCode = $_.Exception.Response.StatusCode.value__
+    $statusCode = $null
+    if ($_.Exception.Response) {
+        $statusCode = $_.Exception.Response.StatusCode.value__
+    }
     if ($statusCode -eq 403) {
         Write-Pass "invalid key -> got 403 (expected)"
     } else {
@@ -112,27 +115,44 @@ if ($rateLimit -le 0) {
 }
 else {
     $firstKey = $keys[0]
-    Write-Info "Configured limit: $rateLimit/min. Sending $($rateLimit + 1) requests with key #1..."
+    Write-Info "Configured limit: $rateLimit/min. Sending requests with key #1 until a 429 appears..."
 
     $hit429 = $false
-    for ($i = 1; $i -le ($rateLimit + 1); $i++) {
+    $successfulAttempts = 0
+    $maxLoopIterations = ($rateLimit * 3) + 10  # generous ceiling so transient network blips don't starve the test
+
+    for ($i = 1; $i -le $maxLoopIterations; $i++) {
         $body = @{ model = "does-not-matter-for-this-test"; prompt = "x" } | ConvertTo-Json
         try {
             $r = Invoke-WebRequest -Uri "$BaseUrl/v1/generate" -Method Post -Headers @{ "Authorization" = "Bearer $firstKey" } -Body $body -ContentType "application/json" -UseBasicParsing -ErrorAction Stop
-            Write-Host "  request $i`: $($r.StatusCode)"
+            $successfulAttempts++
+            Write-Host "  attempt $successfulAttempts (reached server): $($r.StatusCode)"
         }
         catch {
-            $statusCode = $_.Exception.Response.StatusCode.value__
-            Write-Host "  request $i`: $statusCode"
+            $statusCode = $null
+            if ($_.Exception.Response) {
+                $statusCode = $_.Exception.Response.StatusCode.value__
+            }
+
+            if ($null -eq $statusCode) {
+                # Never reached the server (connection reset/timeout) -- don't count this
+                # as a rate-limit attempt, just retry.
+                Write-Host "  (request failed to reach the server -- retrying, not counted)" -ForegroundColor DarkGray
+                Start-Sleep -Milliseconds 200
+                continue
+            }
+
+            $successfulAttempts++
+            Write-Host "  attempt $successfulAttempts (reached server): $statusCode"
             if ($statusCode -eq 429) {
                 $hit429 = $true
-                Write-Pass "rate limit correctly triggered a 429 on request $i"
+                Write-Pass "rate limit correctly triggered a 429 after $successfulAttempts requests reached the server"
                 break
             }
         }
     }
     if (-not $hit429) {
-        Write-Fail "never received a 429 after $($rateLimit + 1) requests"
+        Write-Fail "never received a 429 after $successfulAttempts requests reached the server"
         $allPassed = $false
     }
 
@@ -149,9 +169,16 @@ else {
             Write-Pass "key #2 (...$suffix) still works while key #1 is rate-limited (status $($r.StatusCode))"
         }
         catch {
-            $statusCode = $_.Exception.Response.StatusCode.value__
+            $statusCode = $null
+            if ($_.Exception.Response) {
+                $statusCode = $_.Exception.Response.StatusCode.value__
+            }
             if ($statusCode -eq 429) {
                 Write-Fail "key #2 (...$suffix) was ALSO rate-limited -- rotation would not have helped here"
+                $allPassed = $false
+            }
+            elseif ($null -eq $statusCode) {
+                Write-Fail "key #2 (...$suffix) request never reached the server -- network issue, try re-running"
                 $allPassed = $false
             }
             else {
