@@ -17,6 +17,8 @@ Then call it like:
 
 import os
 import secrets
+import time
+from collections import defaultdict, deque
 from pathlib import Path
 from typing import Optional
 
@@ -34,6 +36,10 @@ ENV_PATH = Path(__file__).parent / ".env"
 load_dotenv(ENV_PATH)
 
 OLLAMA_BASE_URL = os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434")
+
+# How many requests each individual API key may make per rolling 60s window.
+# Set to 0 to disable rate limiting entirely.
+RATE_LIMIT_PER_MINUTE = int(os.environ.get("RATE_LIMIT_PER_MINUTE", "60"))
 
 # Load allowed API keys from the GATEWAY_API_KEYS variable in .env
 # (comma-separated if you have more than one, e.g. one key per app/project).
@@ -62,18 +68,62 @@ if not API_KEYS:
 
 
 # ---------------------------------------------------------------------------
+# Rate limiting (per key, in-memory sliding window)
+# ---------------------------------------------------------------------------
+# Each key gets its own timestamp deque. On each request we drop timestamps
+# older than 60s, then check whether the remaining count is under the limit.
+# This resets automatically if the server restarts (in-memory only).
+
+_request_log: dict[str, deque] = defaultdict(deque)
+WINDOW_SECONDS = 60
+
+
+def check_rate_limit(key: str):
+    if RATE_LIMIT_PER_MINUTE <= 0:
+        return  # rate limiting disabled
+
+    now = time.time()
+    log = _request_log[key]
+
+    while log and now - log[0] > WINDOW_SECONDS:
+        log.popleft()
+
+    if len(log) >= RATE_LIMIT_PER_MINUTE:
+        retry_after = int(WINDOW_SECONDS - (now - log[0])) + 1
+        raise HTTPException(
+            status_code=429,
+            detail=f"Rate limit exceeded for this API key ({RATE_LIMIT_PER_MINUTE}/min). "
+                    f"Try again in {retry_after}s, or use a different key.",
+            headers={"Retry-After": str(retry_after)},
+        )
+
+    log.append(now)
+
+
+# ---------------------------------------------------------------------------
 # App setup
 # ---------------------------------------------------------------------------
 
 app = FastAPI(title="Ollama Gateway", version="1.0.0")
 
 
-def check_api_key(authorization: Optional[str]):
+def check_api_key(authorization: Optional[str]) -> str:
+    """Validates the key and enforces its rate limit. Returns the key itself
+    so callers can use it (e.g. for logging)."""
+    token = check_api_key_no_increment(authorization)
+    check_rate_limit(token)
+    return token
+
+
+def check_api_key_no_increment(authorization: Optional[str]) -> str:
+    """Validates the key only, without counting it against the rate limit.
+    Used by /v1/usage so checking your quota doesn't itself use up quota."""
     if not authorization or not authorization.startswith("Bearer "):
         raise HTTPException(status_code=401, detail="Missing or malformed Authorization header")
     token = authorization.removeprefix("Bearer ").strip()
     if token not in API_KEYS:
         raise HTTPException(status_code=403, detail="Invalid API key")
+    return token
 
 
 # ---------------------------------------------------------------------------
@@ -113,6 +163,21 @@ async def health():
             return {"gateway": "ok", "ollama": "ok", "models": r.json()}
     except Exception as e:
         return JSONResponse(status_code=503, content={"gateway": "ok", "ollama": "unreachable", "error": str(e)})
+
+
+@app.get("/v1/usage")
+async def usage(authorization: Optional[str] = Header(None)):
+    """Check how many requests this key has used in the current window."""
+    key = check_api_key_no_increment(authorization)
+    now = time.time()
+    log = _request_log[key]
+    while log and now - log[0] > WINDOW_SECONDS:
+        log.popleft()
+    return {
+        "limit_per_minute": RATE_LIMIT_PER_MINUTE,
+        "used_in_window": len(log),
+        "remaining": max(0, RATE_LIMIT_PER_MINUTE - len(log)) if RATE_LIMIT_PER_MINUTE > 0 else "unlimited",
+    }
 
 
 @app.get("/v1/models")
