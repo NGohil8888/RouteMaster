@@ -31,7 +31,9 @@ if (-not (Test-Path $envPath)) {
 Get-Content $envPath | ForEach-Object {
     if ($_ -match '^\s*([^#][^=]*)=(.*)$') {
         $key = $matches[1].Trim()
-        $value = $matches[2].Trim().Trim("'").Trim('"')
+        $value = $matches[2]
+        # Strip inline comments (anything after an unquoted #), then trim quotes/whitespace
+        $value = ($value -split '#')[0].Trim().Trim("'").Trim('"')
         Set-Item -Path "env:$key" -Value $value
     }
 }
