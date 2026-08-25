@@ -66,7 +66,38 @@ contains upstream Ollama Cloud credentials and is never exposed to callers.
 When Ollama returns `429`, requests automatically retry with the next key,
 trying each key at most once. For local Ollama, leave `OLLAMA_API_KEYS` blank.
 
-## 4. Usage
+## 4. Connecting Hermes or OpenClaw
+
+Start the gateway first:
+
+```bash
+uvicorn main:app --host 127.0.0.1 --port 8000
+```
+
+Use the generated `GATEWAY_API_KEYS` value as the client API key. Do not put
+the values from `OLLAMA_API_KEYS` into Hermes or OpenClaw. The client should
+call the gateway at `http://127.0.0.1:8000` and send:
+
+```http
+Authorization: Bearer YOUR_GATEWAY_API_KEY
+```
+
+For an integration that supports a custom HTTP provider, configure:
+
+```text
+Base URL: http://127.0.0.1:8000
+API key:  YOUR_GATEWAY_API_KEY
+Chat endpoint: /v1/chat
+Model: YOUR_OLLAMA_MODEL
+```
+
+The request format is documented below under [Chat](#chat). If your Hermes
+or OpenClaw version only supports OpenAI-compatible providers, it expects
+`/v1/chat/completions`, which this gateway does not currently expose. Use its
+custom HTTP/Ollama provider option, or add an OpenAI-compatibility adapter
+before connecting it.
+
+## 5. Usage
 
 ### Health check (no key needed)
 
@@ -108,7 +139,7 @@ Set `"stream": true` in the request body. Responses come back as
 newline-delimited JSON (`application/x-ndjson`), one chunk per line —
 the same format Ollama itself uses.
 
-## 5. Calling it from code
+## 6. Calling it from code
 
 ### Python
 
@@ -144,7 +175,7 @@ const data = await resp.json();
 console.log(data);
 ```
 
-## 6. Using it from multiple projects
+## 7. Using it from multiple projects
 
 Since the gateway runs once on `localhost:8000` (or a LAN IP if you set
 `--host 0.0.0.0` and connect from another device on your network), every
@@ -157,12 +188,12 @@ No project needs direct knowledge of Ollama, which model versions are
 installed, or where it's hosted — the gateway is the single stable
 interface.
 
-## 7. Ollama Cloud key rotation
+## 8. Ollama Cloud key rotation
 
 ### Step 1 — Add multiple Ollama keys in `.env`
 
 ```
-GATEWAY_API_KEYS=key-for-your-app
+GATEWAY_API_KEYS=your-generated-gateway-key
 OLLAMA_BASE_URL=https://ollama.com
 OLLAMA_API_KEYS=key-one,key-two,key-three
 ```
@@ -171,22 +202,19 @@ The gateway uses one Ollama key at a time. If Ollama responds with `429`, it
 advances to the next key and retries the request. There is no local
 local request limiter anymore; Ollama remains the authority for usage quotas.
 
-### Step 2 — Use `gateway_client.py` for automatic rotation
+### Step 2 — Call the gateway from a client
 
-The included `gateway_client.py` still handles gateway-key rotation when a
-gateway itself returns `429`, but normal upstream rotation happens inside the
-gateway:
+Normal upstream rotation happens inside the gateway. The client only needs
+the gateway key:
 
 ```python
 from gateway_client import GatewayClient
 
 client = GatewayClient(
     base_url="http://localhost:8000",
-    api_keys=["key-one", "key-two", "key-three"],
+  api_keys=["your-generated-gateway-key"],
 )
 
-# If "key-one" is currently rate-limited, this call automatically
-# retries with "key-two", then "key-three", before giving up.
 response = client.chat(
     model="nemotron-3-super:cloud",
     messages=[{"role": "user", "content": "Hello!"}],
@@ -215,7 +243,7 @@ usage never eats into it.
 - Ollama's cloud quota is enforced by Ollama. Key rotation only helps when
   the configured keys have independent available quotas.
 
-## 8. Notes on security
+## 9. Notes on security
 
 - This gateway is designed for **local/trusted-network use**. It does not
   do TLS out of the box.
