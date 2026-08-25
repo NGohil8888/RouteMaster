@@ -17,8 +17,7 @@ Then call it like:
 
 import os
 import secrets
-import time
-from collections import defaultdict, deque
+import asyncio
 from pathlib import Path
 from typing import Optional
 
@@ -37,9 +36,16 @@ load_dotenv(ENV_PATH)
 
 OLLAMA_BASE_URL = os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434")
 
-# How many requests each individual API key may make per rolling 60s window.
-# Set to 0 to disable rate limiting entirely.
-RATE_LIMIT_PER_MINUTE = int(os.environ.get("RATE_LIMIT_PER_MINUTE", "60"))
+# Comma-separated Ollama Cloud keys. Requests retry with the next key after
+# Ollama returns 429. An empty value keeps local, unauthenticated Ollama working.
+def load_ollama_api_keys() -> list[str]:
+    raw = os.environ.get("OLLAMA_API_KEYS", "")
+    return [key.strip() for key in raw.split(",") if key.strip()]
+
+
+OLLAMA_API_KEYS = load_ollama_api_keys()
+_ollama_key_index = 0
+_ollama_key_lock = asyncio.Lock()
 
 # Load allowed API keys from the GATEWAY_API_KEYS variable in .env
 # (comma-separated if you have more than one, e.g. one key per app/project).
@@ -68,39 +74,6 @@ if not API_KEYS:
 
 
 # ---------------------------------------------------------------------------
-# Rate limiting (per key, in-memory sliding window)
-# ---------------------------------------------------------------------------
-# Each key gets its own timestamp deque. On each request we drop timestamps
-# older than 60s, then check whether the remaining count is under the limit.
-# This resets automatically if the server restarts (in-memory only).
-
-_request_log: dict[str, deque] = defaultdict(deque)
-WINDOW_SECONDS = 60
-
-
-def check_rate_limit(key: str):
-    if RATE_LIMIT_PER_MINUTE <= 0:
-        return  # rate limiting disabled
-
-    now = time.time()
-    log = _request_log[key]
-
-    while log and now - log[0] > WINDOW_SECONDS:
-        log.popleft()
-
-    if len(log) >= RATE_LIMIT_PER_MINUTE:
-        retry_after = int(WINDOW_SECONDS - (now - log[0])) + 1
-        raise HTTPException(
-            status_code=429,
-            detail=f"Rate limit exceeded for this API key ({RATE_LIMIT_PER_MINUTE}/min). "
-                    f"Try again in {retry_after}s, or use a different key.",
-            headers={"Retry-After": str(retry_after)},
-        )
-
-    log.append(now)
-
-
-# ---------------------------------------------------------------------------
 # App setup
 # ---------------------------------------------------------------------------
 
@@ -108,22 +81,62 @@ app = FastAPI(title="Ollama Gateway", version="1.0.0")
 
 
 def check_api_key(authorization: Optional[str]) -> str:
-    """Validates the key and enforces its rate limit. Returns the key itself
-    so callers can use it (e.g. for logging)."""
-    token = check_api_key_no_increment(authorization)
-    check_rate_limit(token)
-    return token
+    """Validate the key callers use to access this gateway."""
+    return check_api_key_no_increment(authorization)
 
 
 def check_api_key_no_increment(authorization: Optional[str]) -> str:
-    """Validates the key only, without counting it against the rate limit.
-    Used by /v1/usage so checking your quota doesn't itself use up quota."""
+    """Validate the key without making an upstream Ollama request."""
     if not authorization or not authorization.startswith("Bearer "):
         raise HTTPException(status_code=401, detail="Missing or malformed Authorization header")
     token = authorization.removeprefix("Bearer ").strip()
     if token not in API_KEYS:
         raise HTTPException(status_code=403, detail="Invalid API key")
     return token
+
+
+async def ollama_headers() -> dict[str, str]:
+    """Return headers for the current Ollama key, if cloud keys are configured."""
+    if not OLLAMA_API_KEYS:
+        return {}
+    async with _ollama_key_lock:
+        return {"Authorization": f"Bearer {OLLAMA_API_KEYS[_ollama_key_index]}"}
+
+
+async def rotate_ollama_key() -> None:
+    global _ollama_key_index
+    async with _ollama_key_lock:
+        _ollama_key_index = (_ollama_key_index + 1) % len(OLLAMA_API_KEYS)
+
+
+async def ollama_request(client: httpx.AsyncClient, method: str, path: str, **kwargs) -> httpx.Response:
+    """Retry an upstream request once with every Ollama key after a 429."""
+    attempts = max(1, len(OLLAMA_API_KEYS))
+    for attempt in range(attempts):
+        request_kwargs = dict(kwargs)
+        request_kwargs["headers"] = await ollama_headers()
+        response = await client.request(method, f"{OLLAMA_BASE_URL}{path}", **request_kwargs)
+        if response.status_code != 429 or attempt == attempts - 1:
+            return response
+        await rotate_ollama_key()
+    raise RuntimeError("Ollama request retry loop ended unexpectedly")
+
+
+async def ollama_stream(client: httpx.AsyncClient, path: str, **kwargs):
+    """Yield an upstream stream, rotating through all keys on 429 responses."""
+    attempts = max(1, len(OLLAMA_API_KEYS))
+    for attempt in range(attempts):
+        request_kwargs = dict(kwargs)
+        request_kwargs["headers"] = await ollama_headers()
+        async with client.stream("POST", f"{OLLAMA_BASE_URL}{path}", **request_kwargs) as response:
+            if response.status_code == 429 and attempt < attempts - 1:
+                await rotate_ollama_key()
+                continue
+            response.raise_for_status()
+            async for line in response.aiter_lines():
+                if line:
+                    yield line + "\n"
+            return
 
 
 # ---------------------------------------------------------------------------
@@ -158,7 +171,7 @@ async def health():
     """Check that the gateway is up and Ollama is reachable."""
     try:
         async with httpx.AsyncClient(timeout=5) as client:
-            r = await client.get(f"{OLLAMA_BASE_URL}/api/tags")
+            r = await ollama_request(client, "GET", "/api/tags")
             r.raise_for_status()
             return {"gateway": "ok", "ollama": "ok", "models": r.json()}
     except Exception as e:
@@ -167,24 +180,16 @@ async def health():
 
 @app.get("/v1/usage")
 async def usage(authorization: Optional[str] = Header(None)):
-    """Check how many requests this key has used in the current window."""
-    key = check_api_key_no_increment(authorization)
-    now = time.time()
-    log = _request_log[key]
-    while log and now - log[0] > WINDOW_SECONDS:
-        log.popleft()
-    return {
-        "limit_per_minute": RATE_LIMIT_PER_MINUTE,
-        "used_in_window": len(log),
-        "remaining": max(0, RATE_LIMIT_PER_MINUTE - len(log)) if RATE_LIMIT_PER_MINUTE > 0 else "unlimited",
-    }
+    """Report whether Ollama keys are configured for upstream rotation."""
+    check_api_key_no_increment(authorization)
+    return {"ollama_keys_configured": len(OLLAMA_API_KEYS), "rotation_on_429": len(OLLAMA_API_KEYS) > 1}
 
 
 @app.get("/v1/models")
 async def list_models(authorization: Optional[str] = Header(None)):
     check_api_key(authorization)
     async with httpx.AsyncClient(timeout=30) as client:
-        r = await client.get(f"{OLLAMA_BASE_URL}/api/tags")
+        r = await ollama_request(client, "GET", "/api/tags")
         r.raise_for_status()
         return r.json()
 
@@ -204,14 +209,12 @@ async def chat(body: ChatRequest, authorization: Optional[str] = Header(None)):
     if body.stream:
         async def event_stream():
             async with httpx.AsyncClient(timeout=None) as client:
-                async with client.stream("POST", f"{OLLAMA_BASE_URL}/api/chat", json=payload) as r:
-                    async for line in r.aiter_lines():
-                        if line:
-                            yield line + "\n"
+                async for line in ollama_stream(client, "/api/chat", json=payload):
+                    yield line
         return StreamingResponse(event_stream(), media_type="application/x-ndjson")
 
     async with httpx.AsyncClient(timeout=120) as client:
-        r = await client.post(f"{OLLAMA_BASE_URL}/api/chat", json=payload)
+        r = await ollama_request(client, "POST", "/api/chat", json=payload)
         r.raise_for_status()
         return r.json()
 
@@ -231,13 +234,11 @@ async def generate(body: GenerateRequest, authorization: Optional[str] = Header(
     if body.stream:
         async def event_stream():
             async with httpx.AsyncClient(timeout=None) as client:
-                async with client.stream("POST", f"{OLLAMA_BASE_URL}/api/generate", json=payload) as r:
-                    async for line in r.aiter_lines():
-                        if line:
-                            yield line + "\n"
+                async for line in ollama_stream(client, "/api/generate", json=payload):
+                    yield line
         return StreamingResponse(event_stream(), media_type="application/x-ndjson")
 
     async with httpx.AsyncClient(timeout=120) as client:
-        r = await client.post(f"{OLLAMA_BASE_URL}/api/generate", json=payload)
+        r = await ollama_request(client, "POST", "/api/generate", json=payload)
         r.raise_for_status()
         return r.json()

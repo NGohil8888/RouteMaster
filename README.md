@@ -1,7 +1,6 @@
 # Ollama Gateway
 
-A small self-hosted API gateway that sits in front of your local Ollama
-server. It adds:
+A small self-hosted API gateway that sits in front of Ollama. It adds:
 
 - **API-key auth** — no more wide-open `localhost:11434` to every app on
   your machine.
@@ -9,11 +8,13 @@ server. It adds:
   `/v1/health`) you can point any project at, regardless of which model
   or Ollama version is running underneath.
 - **Streaming support** for both chat and generate.
+- **Ollama Cloud key rotation** — retries upstream `429` responses with the
+  next configured Ollama API key.
 
 ## 1. Prerequisites
 
-- Ollama installed and running (`ollama serve`, default port `11434`).
-  At least one model pulled, e.g. `ollama pull llama3.2`.
+- Ollama installed and running (`ollama serve`, default port `11434`), or an
+  Ollama Cloud endpoint and API keys.
 - Python 3.10+
 
 ## 2. Setup
@@ -50,18 +51,20 @@ Copy `.env.example` to `.env`:
 cp .env.example .env
 ```
 
-Then edit `.env` and set one or more keys (comma-separated for multiple
-apps/projects):
+Then edit `.env` and set a gateway key plus your Ollama Cloud configuration:
 
 ```
-GATEWAY_API_KEYS=key-for-app-1,key-for-app-2
-OLLAMA_BASE_URL=http://localhost:11434
+GATEWAY_API_KEYS=key-for-your-app
+OLLAMA_BASE_URL=https://ollama.com
+OLLAMA_API_KEYS=ollama-cloud-key-one,ollama-cloud-key-two,ollama-cloud-key-three
 ```
 
 Restart the server after editing `.env` for changes to take effect.
 
-Different keys let you tell which app/project is calling if you later
-add logging or rate limits — right now all valid keys have equal access.
+`GATEWAY_API_KEYS` authenticates callers to this gateway. `OLLAMA_API_KEYS`
+contains upstream Ollama Cloud credentials and is never exposed to callers.
+When Ollama returns `429`, requests automatically retry with the next key,
+trying each key at most once. For local Ollama, leave `OLLAMA_API_KEYS` blank.
 
 ## 4. Usage
 
@@ -154,26 +157,25 @@ No project needs direct knowledge of Ollama, which model versions are
 installed, or where it's hosted — the gateway is the single stable
 interface.
 
-## 7. Key rotation (multiple keys, automatic fallback)
+## 7. Ollama Cloud key rotation
 
-You can give the gateway several keys and set a per-key rate limit. When one
-key hits its limit, requests using that key get rejected with `429 Too Many
-Requests` — your client can then automatically switch to the next key.
-
-### Step 1 — Add multiple keys and a limit in `.env`
+### Step 1 — Add multiple Ollama keys in `.env`
 
 ```
-GATEWAY_API_KEYS=key-one,key-two,key-three
-RATE_LIMIT_PER_MINUTE=60
+GATEWAY_API_KEYS=key-for-your-app
+OLLAMA_BASE_URL=https://ollama.com
+OLLAMA_API_KEYS=key-one,key-two,key-three
 ```
 
-Each key gets its own independent quota (60 requests/minute each, in this
-example — 180 total across all three). Set `RATE_LIMIT_PER_MINUTE=0` to
-disable rate limiting entirely.
+The gateway uses one Ollama key at a time. If Ollama responds with `429`, it
+advances to the next key and retries the request. There is no local
+local request limiter anymore; Ollama remains the authority for usage quotas.
 
 ### Step 2 — Use `gateway_client.py` for automatic rotation
 
-The included `gateway_client.py` handles this for you:
+The included `gateway_client.py` still handles gateway-key rotation when a
+gateway itself returns `429`, but normal upstream rotation happens inside the
+gateway:
 
 ```python
 from gateway_client import GatewayClient
@@ -192,8 +194,8 @@ response = client.chat(
 print(response["message"]["content"])
 ```
 
-It keeps track of which key it's currently on and only moves to the next
-one when it gets a `429`, so it doesn't waste quota switching unnecessarily.
+The upstream key is selected by the gateway, so clients do not need to know
+or expose Ollama Cloud credentials.
 
 ### Checking remaining quota
 
@@ -202,7 +204,7 @@ curl http://localhost:8000/v1/usage -H "Authorization: Bearer YOUR_KEY"
 ```
 
 ```json
-{"limit_per_minute": 60, "used_in_window": 12, "remaining": 48}
+{"ollama_keys_configured": 3, "rotation_on_429": true}
 ```
 
 This endpoint doesn't count against the key's own quota, so checking your
@@ -210,13 +212,8 @@ usage never eats into it.
 
 ### Notes
 
-- The rate limiter is **in-memory** — it resets if you restart the gateway.
-  For a purely local single-user setup this is normally fine.
-- This limits *your own client apps'* usage of the gateway. It's separate
-  from any rate limits Ollama's cloud service itself might apply when a
-  model runs remotely (e.g. `nemotron-3-super:cloud`) — those are enforced
-  by Ollama, not by this gateway, and aren't something key rotation here
-  can get around.
+- Ollama's cloud quota is enforced by Ollama. Key rotation only helps when
+  the configured keys have independent available quotas.
 
 ## 8. Notes on security
 

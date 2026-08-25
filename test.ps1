@@ -2,8 +2,7 @@
 # Loads keys from .env automatically. Tests:
 #   1. Each key individually works against the gateway
 #   2. An invalid key is correctly rejected
-#   3. Rate limiting trips into 429 once a key's quota is used up
-#   4. Rotation: once key #1 is exhausted, key #2 still works
+#   3. Ollama Cloud key rotation is configured in the gateway
 #
 # Usage:
 #   .\test.ps1
@@ -44,8 +43,6 @@ if (-not $env:GATEWAY_API_KEYS) {
 }
 
 $keys = $env:GATEWAY_API_KEYS -split ',' | ForEach-Object { $_.Trim() } | Where-Object { $_ }
-$rateLimit = if ($env:RATE_LIMIT_PER_MINUTE) { [int]$env:RATE_LIMIT_PER_MINUTE } else { 60 }
-
 Write-Info "Testing gateway at $BaseUrl"
 Write-Info "Keys under test: $($keys.Count) key(s) loaded from .env"
 Write-Host ""
@@ -107,87 +104,22 @@ catch {
     }
 }
 
-# --- Test 3 & 4: rate limit trips, then rotation to next key works ---
-Write-Host "`n== Test 3: rate limit trips for the first key ==" -ForegroundColor Yellow
-
-if ($rateLimit -le 0) {
-    Write-Info "Rate limiting is disabled (RATE_LIMIT_PER_MINUTE=0) -- skipping rate limit + rotation tests."
-}
-else {
-    $firstKey = $keys[0]
-    Write-Info "Configured limit: $rateLimit/min. Sending requests with key #1 until a 429 appears..."
-
-    $hit429 = $false
-    $successfulAttempts = 0
-    $maxLoopIterations = ($rateLimit * 3) + 10  # generous ceiling so transient network blips don't starve the test
-
-    for ($i = 1; $i -le $maxLoopIterations; $i++) {
-        $body = @{ model = "does-not-matter-for-this-test"; prompt = "x" } | ConvertTo-Json
-        try {
-            $r = Invoke-WebRequest -Uri "$BaseUrl/v1/generate" -Method Post -Headers @{ "Authorization" = "Bearer $firstKey" } -Body $body -ContentType "application/json" -UseBasicParsing -ErrorAction Stop
-            $successfulAttempts++
-            Write-Host "  attempt $successfulAttempts (reached server): $($r.StatusCode)"
-        }
-        catch {
-            $statusCode = $null
-            if ($_.Exception.Response) {
-                $statusCode = $_.Exception.Response.StatusCode.value__
-            }
-
-            if ($null -eq $statusCode) {
-                # Never reached the server (connection reset/timeout) -- don't count this
-                # as a rate-limit attempt, just retry.
-                Write-Host "  (request failed to reach the server -- retrying, not counted)" -ForegroundColor DarkGray
-                Start-Sleep -Milliseconds 200
-                continue
-            }
-
-            $successfulAttempts++
-            Write-Host "  attempt $successfulAttempts (reached server): $statusCode"
-            if ($statusCode -eq 429) {
-                $hit429 = $true
-                Write-Pass "rate limit correctly triggered a 429 after $successfulAttempts requests reached the server"
-                break
-            }
-        }
-    }
-    if (-not $hit429) {
-        Write-Fail "never received a 429 after $successfulAttempts requests reached the server"
-        $allPassed = $false
-    }
-
-    Write-Host "`n== Test 4: rotating to key #2 after key #1 is exhausted ==" -ForegroundColor Yellow
-    if ($keys.Count -lt 2) {
-        Write-Info "Only one key configured -- add a second key to .env to test rotation. Skipping."
+# --- Test 3: upstream rotation configuration ---
+Write-Host "`n== Test 3: Ollama Cloud key rotation is configured ==" -ForegroundColor Yellow
+try {
+    $r = Invoke-WebRequest -Uri "$BaseUrl/v1/usage" -Method Get -Headers @{ "Authorization" = "Bearer $($keys[0])" } -UseBasicParsing -ErrorAction Stop
+    $usage = $r.Content | ConvertFrom-Json
+    if ($usage.ollama_keys_configured -ge 1) {
+        Write-Pass "$($usage.ollama_keys_configured) Ollama key(s) configured; rotation_on_429=$($usage.rotation_on_429)"
     }
     else {
-        $secondKey = $keys[1]
-        $suffix = $secondKey.Substring([Math]::Max(0, $secondKey.Length - 6))
-        $body = @{ model = "does-not-matter-for-this-test"; prompt = "x" } | ConvertTo-Json
-        try {
-            $r = Invoke-WebRequest -Uri "$BaseUrl/v1/generate" -Method Post -Headers @{ "Authorization" = "Bearer $secondKey" } -Body $body -ContentType "application/json" -UseBasicParsing -ErrorAction Stop
-            Write-Pass "key #2 (...$suffix) still works while key #1 is rate-limited (status $($r.StatusCode))"
-        }
-        catch {
-            $statusCode = $null
-            if ($_.Exception.Response) {
-                $statusCode = $_.Exception.Response.StatusCode.value__
-            }
-            if ($statusCode -eq 429) {
-                Write-Fail "key #2 (...$suffix) was ALSO rate-limited -- rotation would not have helped here"
-                $allPassed = $false
-            }
-            elseif ($null -eq $statusCode) {
-                Write-Fail "key #2 (...$suffix) request never reached the server -- network issue, try re-running"
-                $allPassed = $false
-            }
-            else {
-                # Any non-429 (e.g. 500 because the fake model name doesn't exist)
-                # means it got PAST the rate limiter on key #2, which is what we're testing.
-                Write-Pass "key #2 (...$suffix) got past the rate limiter (status $statusCode, unrelated to rotation)"
-            }
-        }
+        Write-Fail "No OLLAMA_API_KEYS configured in the gateway"
+        $allPassed = $false
     }
+}
+catch {
+    Write-Fail "Could not read upstream rotation configuration ($($_.Exception.Message))"
+    $allPassed = $false
 }
 
 # --- Summary ---
