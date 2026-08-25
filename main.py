@@ -141,6 +141,19 @@ async def ollama_stream(client: httpx.AsyncClient, path: str, **kwargs):
             return
 
 
+def raise_for_upstream(response: httpx.Response) -> None:
+    if not response.is_error:
+        return
+    try:
+        detail = response.json()
+    except ValueError:
+        detail = response.text or "Ollama upstream request failed"
+    headers = {}
+    if response.headers.get("Retry-After"):
+        headers["Retry-After"] = response.headers["Retry-After"]
+    raise HTTPException(status_code=response.status_code, detail=detail, headers=headers)
+
+
 # ---------------------------------------------------------------------------
 # Request models
 # ---------------------------------------------------------------------------
@@ -200,7 +213,7 @@ async def health():
     try:
         async with httpx.AsyncClient(timeout=5) as client:
             r = await ollama_request(client, "GET", "/api/tags")
-            r.raise_for_status()
+            raise_for_upstream(r)
             return {"gateway": "ok", "ollama": "ok", "models": r.json()}
     except Exception as e:
         return JSONResponse(status_code=503, content={"gateway": "ok", "ollama": "unreachable", "error": str(e)})
@@ -218,7 +231,7 @@ async def list_models(authorization: Optional[str] = Header(None)):
     check_api_key(authorization)
     async with httpx.AsyncClient(timeout=30) as client:
         r = await ollama_request(client, "GET", "/api/tags")
-        r.raise_for_status()
+        raise_for_upstream(r)
         return r.json()
 
 
@@ -243,7 +256,7 @@ async def chat(body: ChatRequest, authorization: Optional[str] = Header(None)):
 
     async with httpx.AsyncClient(timeout=120) as client:
         r = await ollama_request(client, "POST", "/api/chat", json=payload)
-        r.raise_for_status()
+        raise_for_upstream(r)
         return r.json()
 
 
@@ -288,7 +301,7 @@ async def chat_completions(body: OpenAIChatRequest, authorization: Optional[str]
 
     async with httpx.AsyncClient(timeout=120) as client:
         response = await ollama_request(client, "POST", "/api/chat", json=payload)
-        response.raise_for_status()
+        raise_for_upstream(response)
         return openai_response(response.json(), body.model)
 
 
@@ -313,5 +326,5 @@ async def generate(body: GenerateRequest, authorization: Optional[str] = Header(
 
     async with httpx.AsyncClient(timeout=120) as client:
         r = await ollama_request(client, "POST", "/api/generate", json=payload)
-        r.raise_for_status()
+        raise_for_upstream(r)
         return r.json()
