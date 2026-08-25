@@ -18,6 +18,8 @@ Then call it like:
 import os
 import secrets
 import asyncio
+import json
+import time
 from pathlib import Path
 from typing import Optional
 
@@ -155,6 +157,32 @@ class ChatRequest(BaseModel):
     temperature: Optional[float] = None
 
 
+class OpenAIChatRequest(ChatRequest):
+    """Subset of the OpenAI chat-completions request used by Hermes."""
+
+def openai_response(ollama_response: dict, model: str) -> dict:
+    message = ollama_response.get("message", {})
+    return {
+        "id": f"chatcmpl-{secrets.token_hex(12)}",
+        "object": "chat.completion",
+        "created": int(time.time()),
+        "model": model,
+        "choices": [{
+            "index": 0,
+            "message": {
+                "role": message.get("role", "assistant"),
+                "content": message.get("content", ""),
+            },
+            "finish_reason": "stop",
+        }],
+        "usage": {
+            "prompt_tokens": ollama_response.get("prompt_eval_count", 0),
+            "completion_tokens": ollama_response.get("eval_count", 0),
+            "total_tokens": ollama_response.get("prompt_eval_count", 0) + ollama_response.get("eval_count", 0),
+        },
+    }
+
+
 class GenerateRequest(BaseModel):
     model: str
     prompt: str
@@ -217,6 +245,51 @@ async def chat(body: ChatRequest, authorization: Optional[str] = Header(None)):
         r = await ollama_request(client, "POST", "/api/chat", json=payload)
         r.raise_for_status()
         return r.json()
+
+
+@app.post("/v1/chat/completions")
+async def chat_completions(body: OpenAIChatRequest, authorization: Optional[str] = Header(None)):
+    """OpenAI-compatible chat endpoint for Hermes and OpenClaw."""
+    check_api_key(authorization)
+    payload = {
+        "model": body.model,
+        "messages": [message.model_dump() for message in body.messages],
+        "stream": body.stream,
+    }
+    if body.temperature is not None:
+        payload["options"] = {"temperature": body.temperature}
+
+    if body.stream:
+        completion_id = f"chatcmpl-{secrets.token_hex(12)}"
+
+        async def event_stream():
+            async with httpx.AsyncClient(timeout=None) as client:
+                async for line in ollama_stream(client, "/api/chat", json=payload):
+                    chunk = json.loads(line)
+                    message = chunk.get("message", {})
+                    data = {
+                        "id": completion_id,
+                        "object": "chat.completion.chunk",
+                        "created": int(time.time()),
+                        "model": body.model,
+                        "choices": [{
+                            "index": 0,
+                            "delta": {
+                                "role": message.get("role"),
+                                "content": message.get("content", ""),
+                            },
+                            "finish_reason": "stop" if chunk.get("done") else None,
+                        }],
+                    }
+                    yield f"data: {json.dumps(data)}\n\n"
+                yield "data: [DONE]\n\n"
+
+        return StreamingResponse(event_stream(), media_type="text/event-stream")
+
+    async with httpx.AsyncClient(timeout=120) as client:
+        response = await ollama_request(client, "POST", "/api/chat", json=payload)
+        response.raise_for_status()
+        return openai_response(response.json(), body.model)
 
 
 @app.post("/v1/generate")

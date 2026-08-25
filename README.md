@@ -79,7 +79,10 @@ the values from `OLLAMA_API_KEYS` into Hermes or OpenClaw. The client should
 call the gateway at `http://127.0.0.1:8000` and send:
 
 ```http
-Authorization: Bearer YOUR_GATEWAY_API_KEY
+hermes config set model.provider ollama-launch
+hermes config set model.api_key YOUR_GATEWAY_API_KEY
+hermes config set model.base_url http://127.0.0.1:8000/v1
+hermes config set model.default minimax-m3:cloud
 ```
 
 For an integration that supports a custom HTTP provider, configure:
@@ -91,11 +94,9 @@ Chat endpoint: /v1/chat
 Model: YOUR_OLLAMA_MODEL
 ```
 
-The request format is documented below under [Chat](#chat). If your Hermes
-or OpenClaw version only supports OpenAI-compatible providers, it expects
-`/v1/chat/completions`, which this gateway does not currently expose. Use its
-custom HTTP/Ollama provider option, or add an OpenAI-compatibility adapter
-before connecting it.
+The request format is documented below under [Chat](#chat). Hermes and
+OpenClaw configurations using OpenAI-compatible providers can use the
+gateway's `/v1/chat/completions` endpoint directly.
 
 ## 5. Usage
 
